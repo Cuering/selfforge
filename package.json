@@ -1,0 +1,16 @@
+{
+  "name": "selfforge",
+  "version": "1.0.0",
+  "description": "Unified self-evolution engine for OpenCode: memory, goals, skills, rules, and evolution in one plugin.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["opencode", "plugin", "self-evolution", "memory", "skills", "agent"],
+  "scripts": {
+    "typecheck": "tsc --noEmit --skipLibCheck --module esnext --moduleResolution bundler --target es2022 --types node plugin/selfforge.ts"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.11",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}
