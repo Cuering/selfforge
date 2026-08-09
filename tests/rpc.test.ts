@@ -77,3 +77,48 @@ test("unknown method returns a JSON-RPC error", async () => {
   const r = await call("no.such.method")
   expect(r.error?.code).toBe(-32000)
 })
+
+// Phase 5 visual dashboard: GET / serves HTML, /api/* serves JSON.
+
+async function getJson(path: string) {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`)
+  return { status: res.status, body: await res.json() }
+}
+
+test("GET / serves the single-page dashboard HTML", async () => {
+  const res = await fetch(`http://127.0.0.1:${port}/`)
+  expect(res.status).toBe(200)
+  const html = await res.text()
+  expect(html).toContain("selfforge")
+  expect(html).toContain("api/dashboard")
+})
+
+test("GET /api/dashboard returns counts and status", async () => {
+  const { status, body } = await getJson("/api/dashboard")
+  expect(status).toBe(200)
+  expect(body.status.node_id).toMatch(/^node-/)
+  expect(typeof body.counts.memories).toBe("number")
+  expect(typeof body.counts.skills).toBe("number")
+})
+
+test("GET /api/memories returns the memory list", async () => {
+  const { status, body } = await getJson("/api/memories")
+  expect(status).toBe(200)
+  expect(Array.isArray(body)).toBe(true)
+  const hit = body.find((m: any) => m.content === "rpc roundtrip lesson")
+  expect(hit?.id).toMatch(/^[0-9a-f-]{36}$/i)
+})
+
+test("GET /api/skills and /api/patterns return arrays", async () => {
+  const sk = await getJson("/api/skills")
+  const pt = await getJson("/api/patterns")
+  expect(sk.status).toBe(200)
+  expect(Array.isArray(sk.body)).toBe(true)
+  expect(pt.status).toBe(200)
+  expect(Array.isArray(pt.body)).toBe(true)
+})
+
+test("unknown API path returns 404", async () => {
+  const res = await fetch(`http://127.0.0.1:${port}/api/nope`)
+  expect(res.status).toBe(404)
+})

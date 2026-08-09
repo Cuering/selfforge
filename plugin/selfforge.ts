@@ -28,7 +28,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     (directory || worktree || process.cwd()).split(/[\\/]/).pop() || "unknown"
 
   composeMemoryContext()
-  logObs("plugin_loaded", { version: "1.6.0" }, projectName())
+  logObs("plugin_loaded", { version: "1.7.0" }, projectName())
   try {
     touchWorkspace(directory || worktree || process.cwd())
   } catch {}
