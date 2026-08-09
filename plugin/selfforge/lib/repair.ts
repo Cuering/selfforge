@@ -1,5 +1,6 @@
 import { getDb, getConfig, now, stamp } from "./db"
 import { sessionSearch } from "./review"
+import { recordPattern } from "./patterns"
 
 /**
  * Decision repair (ported from MemOS `core/feedback` + `core/decision-repair`),
@@ -280,6 +281,8 @@ export function runRepair(input: RunRepairInput): RunRepairResult {
     if (!burst.burst) {
       return { ok: false, skipped: true, reason: "no-burst", trigger }
     }
+    // feed the pattern-signature candidate pool (zero-LLM induction source)
+    recordPattern(tool, errCode, context, `burst|${tool}|${now().slice(0, 10)}`)
   }
 
   const failures = tool ? recentFailures(tool, context) : []

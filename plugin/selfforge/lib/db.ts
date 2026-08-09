@@ -196,6 +196,22 @@ CREATE TABLE IF NOT EXISTS repairs (
   deleted INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_repairs_scope ON repairs (scope, status, created_at);
+
+CREATE TABLE IF NOT EXISTS pattern_signatures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid TEXT UNIQUE,
+  origin TEXT,
+  sig TEXT,
+  sig_hash TEXT,
+  sig_label TEXT,
+  tool TEXT,
+  err_code TEXT,
+  context TEXT,
+  episode_key TEXT,
+  created_at TEXT,
+  deleted INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_patterns_hash ON pattern_signatures (sig_hash, created_at);
 `
 
 export function initDb(): Database {
@@ -214,7 +230,7 @@ export function initDb(): Database {
  * Sync-able tables carry row-level identity for cross-agent / cross-platform
  * replication (Phase 0): uuid, origin (node id) and a deleted tombstone.
  */
-const SYNC_TABLES = ["memories", "skills", "rules", "goals", "checkpoints", "evolution", "observations", "user_profile", "signals", "repairs"] as const
+const SYNC_TABLES = ["memories", "skills", "rules", "goals", "checkpoints", "evolution", "observations", "user_profile", "signals", "repairs", "pattern_signatures"] as const
 
 /** Backfill sync columns on tables created before v1.5 (additive, idempotent). */
 function migrateSyncColumns(d: Database) {

@@ -13,6 +13,7 @@ import { goalTools } from "./selfforge/lib/tools/goals"
 import { evolutionTools } from "./selfforge/lib/tools/evolution"
 import { curatorTools } from "./selfforge/lib/tools/curator"
 import { repairTools } from "./selfforge/lib/tools/repair"
+import { patternTools } from "./selfforge/lib/tools/patterns"
 import { recordSignal } from "./selfforge/lib/repair"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
@@ -248,6 +249,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...evolutionTools,
     ...curatorTools,
     ...repairTools,
+    ...patternTools,
   }
 
   return { ...hooks, tool: tools }
