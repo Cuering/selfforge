@@ -225,16 +225,18 @@ function migrateSyncColumns(d: Database) {
   for (const t of SYNC_TABLES) {
     const cols = tableCols(t)
     const adds: Array<[string, string]> = []
-    if (!cols.has("uuid")) adds.push(["uuid", "TEXT UNIQUE"])
+    if (!cols.has("uuid")) adds.push(["uuid", "TEXT"])
     if (!cols.has("origin")) adds.push(["origin", "TEXT"])
     if (!cols.has("deleted")) adds.push(["deleted", "INTEGER DEFAULT 0"])
     if (!cols.has("updated_at")) adds.push(["updated_at", "TEXT"])
+    // NOTE: ALTER cannot add a UNIQUE column; add plain TEXT then index after backfill
     for (const [name, decl] of adds) d.exec(`ALTER TABLE ${t} ADD COLUMN ${name} ${decl}`)
     // Backfill missing uuids for rows written before the column existed.
     const missing = d.query(`SELECT id FROM ${t} WHERE uuid IS NULL`).all() as Array<{ id: number }>
     for (const row of missing) {
       d.exec(`UPDATE ${t} SET uuid = '${newUuid()}' WHERE id = ${row.id}`)
     }
+    d.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${t}_uuid ON ${t}(uuid)`)
   }
 }
 

@@ -1,11 +1,12 @@
 import { tool } from "@opencode-ai/plugin"
 import { skillCreate, skillPatch, skillArchive, skillList, skillUsage, skillStatus, skillFeedback } from "../skills"
+import { verifySkillDraft } from "../verify"
 import { logObs } from "../db"
 
 export const skillTools = {
   skill_create: tool({
     description:
-      "Create a new skill from distilled knowledge. Name is auto-slugified. Body appended if empty.",
+      "Create a new skill from distilled knowledge. Name is auto-slugified. Body appended if empty. Runs deterministic anti-hallucination verification (tool coverage + evidence resonance) and returns the verdict as advisory info.",
     args: {
       name: tool.schema.string(),
       description: tool.schema.string(),
@@ -13,8 +14,13 @@ export const skillTools = {
     },
     async execute(args, ctx) {
       const res = skillCreate(args.name, args.description, args.body)
-      logObs("skill_create", res, ctx.directory)
-      return { output: JSON.stringify(res, null, 2) }
+      const verify = verifySkillDraft({
+        name: res.name ?? args.name,
+        description: args.description,
+        body: args.body ?? "",
+      })
+      logObs("skill_create", { ...res, verify }, ctx.directory)
+      return { output: JSON.stringify({ ...res, verify }, null, 2) }
     },
   }),
 
@@ -85,6 +91,21 @@ export const skillTools = {
       const res = skillFeedback(args.name, args.positive)
       logObs("skill_feedback", res, ctx.directory)
       return { output: JSON.stringify(res) }
+    },
+  }),
+
+  skill_verify: tool({
+    description:
+      "Deterministic anti-hallucination check on a skill body before you create/patch it: (1) tool coverage — every command/tool named must appear in real evidence (signals + session history); (2) evidence resonance — the body must share >=2 tokens with recent session messages. Returns coverage/resonance scores and unmapped tool names.",
+    args: {
+      name: tool.schema.string().describe("Proposed skill name"),
+      description: tool.schema.string().optional().describe("Proposed description"),
+      body: tool.schema.string().describe("Proposed SKILL.md body"),
+    },
+    async execute(args, ctx) {
+      const res = verifySkillDraft({ name: args.name, description: args.description, body: args.body })
+      logObs("skill_verify", res, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
     },
   }),
 }
