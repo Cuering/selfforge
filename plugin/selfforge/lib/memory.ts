@@ -1,6 +1,7 @@
 import { writeFileSync } from "fs"
 import { join } from "path"
 import { getDb, getConfig, now, EVOLVE_HOME, stamp } from "./db"
+import { scopeBoost } from "./workspace"
 
 export const CONTEXT_FILE = join(EVOLVE_HOME, "memory.context.md")
 
@@ -461,10 +462,11 @@ function tokenize(text: string): Set<string> {
  */
 export function memoryRecall(
   query: string,
-  opts?: { minScore?: number; limit?: number; scope?: string }
+  opts?: { minScore?: number; limit?: number; scope?: string; wsScope?: string }
 ): Memory[] {
   const minScore = opts?.minScore ?? 2
   const limit = opts?.limit ?? 5
+  const wsBoost = opts?.wsScope ? 1 : 0
   if (!query || query.trim().length < 2) return []
   const q = tokenize(query)
   const nowMs = Date.now()
@@ -480,7 +482,8 @@ export function memoryRecall(
     for (const w of q) if (mt.has(w)) hits++
     if (hits < minScore) continue
     const tierBonus = m.tier === "hot" ? 1 : m.tier === "warm" ? 0.5 : 0
-    scored.push({ m, score: hits + tierBonus })
+    const boost = wsBoost ? scopeBoost(opts.wsScope!, m) : 0
+    scored.push({ m, score: hits + tierBonus + boost })
   }
   scored.sort((a, b) => b.score - a.score)
   const top = scored.slice(0, limit)

@@ -212,6 +212,23 @@ CREATE TABLE IF NOT EXISTS pattern_signatures (
   deleted INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_patterns_hash ON pattern_signatures (sig_hash, created_at);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid TEXT UNIQUE,
+  origin TEXT,
+  path TEXT UNIQUE,
+  name TEXT,
+  fingerprint TEXT,
+  scope TEXT,
+  markers TEXT,
+  visits INTEGER DEFAULT 1,
+  first_seen TEXT,
+  last_seen TEXT,
+  updated_at TEXT,
+  deleted INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_scope ON workspaces (scope, last_seen);
 `
 
 export function initDb(): Database {

@@ -14,7 +14,9 @@ import { evolutionTools } from "./selfforge/lib/tools/evolution"
 import { curatorTools } from "./selfforge/lib/tools/curator"
 import { repairTools } from "./selfforge/lib/tools/repair"
 import { patternTools } from "./selfforge/lib/tools/patterns"
+import { workspaceTools } from "./selfforge/lib/tools/workspace"
 import { recordSignal } from "./selfforge/lib/repair"
+import { touchWorkspace } from "./selfforge/lib/workspace"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -25,6 +27,9 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
 
   composeMemoryContext()
   logObs("plugin_loaded", { version: "1.5.0" }, projectName())
+  try {
+    touchWorkspace(directory || worktree || process.cwd())
+  } catch {}
   try {
     memoryDecay()
   } catch {}
@@ -250,6 +255,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...curatorTools,
     ...repairTools,
     ...patternTools,
+    ...workspaceTools,
   }
 
   return { ...hooks, tool: tools }
