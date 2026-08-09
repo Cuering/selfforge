@@ -12,6 +12,8 @@ import { ruleTools } from "./selfforge/lib/tools/rules"
 import { goalTools } from "./selfforge/lib/tools/goals"
 import { evolutionTools } from "./selfforge/lib/tools/evolution"
 import { curatorTools } from "./selfforge/lib/tools/curator"
+import { repairTools } from "./selfforge/lib/tools/repair"
+import { recordSignal } from "./selfforge/lib/repair"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -200,6 +202,18 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
         if (input.tool === "skill" && input.args?.name) {
           recordSkillUse(String(input.args.name))
         }
+        // decision-repair signal tap: every non-skill tool call is a step-level
+        // success/failure signal (gated; feeds the burst detector)
+        if (input.tool && input.tool !== "skill" && getConfig("signals_auto", "true") !== "false") {
+          const err = input.error || input.output?.isError || (input.output && typeof input.output === "object" && (input.output as any).error)
+          if (err) {
+            const code =
+              typeof err === "string" ? err.slice(0, 80) : (err as any)?.name || (err as any)?.code || (err as any)?.message || "error"
+            recordSignal("failure", String(input.tool), projectName(), typeof code === "string" ? code.slice(0, 80) : "error")
+          } else {
+            recordSignal("success", String(input.tool), projectName())
+          }
+        }
       } catch {}
     },
 
@@ -233,6 +247,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...goalTools,
     ...evolutionTools,
     ...curatorTools,
+    ...repairTools,
   }
 
   return { ...hooks, tool: tools }

@@ -166,6 +166,36 @@ CREATE TABLE IF NOT EXISTS observations (
   created_at TEXT,
   deleted INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid TEXT UNIQUE,
+  origin TEXT,
+  kind TEXT NOT NULL,
+  tool TEXT,
+  context TEXT,
+  err_code TEXT,
+  created_at TEXT,
+  deleted INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_signals_scope ON signals (tool, context, created_at);
+
+CREATE TABLE IF NOT EXISTS repairs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid TEXT UNIQUE,
+  origin TEXT,
+  kind TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  scope TEXT,
+  draft TEXT NOT NULL,
+  evidence TEXT,
+  failure_count INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'draft',
+  created_at TEXT,
+  updated_at TEXT,
+  deleted INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_repairs_scope ON repairs (scope, status, created_at);
 `
 
 export function initDb(): Database {
@@ -184,7 +214,7 @@ export function initDb(): Database {
  * Sync-able tables carry row-level identity for cross-agent / cross-platform
  * replication (Phase 0): uuid, origin (node id) and a deleted tombstone.
  */
-const SYNC_TABLES = ["memories", "skills", "rules", "goals", "checkpoints", "evolution", "observations", "user_profile"] as const
+const SYNC_TABLES = ["memories", "skills", "rules", "goals", "checkpoints", "evolution", "observations", "user_profile", "signals", "repairs"] as const
 
 /** Backfill sync columns on tables created before v1.5 (additive, idempotent). */
 function migrateSyncColumns(d: Database) {
