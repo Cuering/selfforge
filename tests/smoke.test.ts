@@ -62,19 +62,45 @@ test("memoryAddDedup merges near-duplicates", async () => {
   expect(r3.merged).toBe(false)
 })
 
-test("memoryDecay downgrades stale memories and archives very old ones", async () => {
+test("memoryDecay decays strength and archives very old ones", async () => {
   const db = (await import("../plugin/selfforge/lib/db")) as typeof import("../plugin/selfforge/lib/db")
   db.getDb().query("DELETE FROM memories").run()
   const m = (await import("../plugin/selfforge/lib/memory")) as typeof import("../plugin/selfforge/lib/memory")
   m.memoryAdd("stale lesson that will decay")
   const row = db.getDb().query("SELECT * FROM memories").get() as { id: number; last_reinforced_at: string; strength: number }
-  // age it beyond decay threshold
-  const old = new Date(Date.now() - 60 * 86400000).toISOString()
-  db.getDb().query("UPDATE memories SET last_reinforced_at = ? WHERE id = ?").run(old, row.id)
-  const res = m.memoryDecay({ decayDays: 30, archiveDays: 120 })
-  expect(res.decayed).toBe(1)
-  const after = db.getDb().query("SELECT strength FROM memories WHERE id = ?").get(row.id) as { strength: number }
-  expect(after.strength).toBeLessThan(row.strength)
+  // age it well beyond the archive threshold (strength 1, 120+ days inactive)
+  const old = new Date(Date.now() - 130 * 86400000).toISOString()
+  db.getDb().query("UPDATE memories SET last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?").run(old, old, row.id)
+  const res = m.memoryDecay({ archiveDays: 120, demoteDays: 30 })
+  // strength 1 + 130d -> archived (not merely decayed)
+  const after = db.getDb().query("SELECT archived, strength FROM memories WHERE id = ?").get(row.id) as { archived: number; strength: number }
+  expect(after.archived).toBe(1)
+})
+
+test("memoryStrengthen promotes lifecycle after enough accesses", async () => {
+  const db = (await import("../plugin/selfforge/lib/db")) as typeof import("../plugin/selfforge/lib/db")
+  db.getDb().query("DELETE FROM memories").run()
+  const m = (await import("../plugin/selfforge/lib/memory")) as typeof import("../plugin/selfforge/lib/memory")
+  m.memoryAdd("frequently revisited important lesson")
+  const id = (db.getDb().query("SELECT id FROM memories").get() as { id: number }).id
+  for (let i = 0; i < 16; i++) m.memoryStrengthen("frequently revisited")
+  // temporary -> active at 15 accesses; 16 accesses stays active (permanent needs 30)
+  const after = db.getDb().query("SELECT lifecycle, access_count FROM memories WHERE id = ?").get(id) as { lifecycle: string; access_count: number }
+  expect(after.access_count).toBeGreaterThanOrEqual(16)
+  expect(after.lifecycle).toBe("active")
+})
+
+test("memoryBrief reports distribution and health", async () => {
+  const db = (await import("../plugin/selfforge/lib/db")) as typeof import("../plugin/selfforge/lib/db")
+  db.getDb().query("DELETE FROM memories").run()
+  const m = (await import("../plugin/selfforge/lib/memory")) as typeof import("../plugin/selfforge/lib/memory")
+  m.memoryAdd("prefers git over svn", { type: "preference" })
+  m.memoryAdd("use pnpm workspaces", { type: "instruction", importance: 8 })
+  const brief = m.memoryBrief()
+  expect(brief.active).toBe(2)
+  expect(brief.byType["preference"]).toBe(1)
+  expect(brief.byType["instruction"]).toBe(1)
+  expect(brief.addedToday).toBe(2)
 })
 
 test("social-closer filter", async () => {

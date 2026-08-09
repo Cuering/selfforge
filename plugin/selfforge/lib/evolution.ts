@@ -103,4 +103,21 @@ export function pickEvolutionCandidate() {
   return cands[0]
 }
 
+/** Recent applied/rejected evolution records as short "behavior criteria" for injection. */
+export function evolutionCriteria(max: number = 3): Array<{ strategy: string; skill: string; date: string }> {
+  const rows = getDb()
+    .query(
+      `SELECT e.strategy, e.created_at, s.name AS skill_name
+       FROM evolution e JOIN skills s ON s.id = e.skill_id
+       WHERE e.status IN ('applied', 'pending')
+       ORDER BY e.created_at DESC LIMIT ?`
+    )
+    .all(max) as Array<{ strategy: string; created_at: string; skill_name: string }>
+  return rows.map((r) => ({
+    strategy: r.strategy,
+    skill: r.skill_name,
+    date: (r.created_at || "").slice(0, 10),
+  }))
+}
+
 export { skillList }

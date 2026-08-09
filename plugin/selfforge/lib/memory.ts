@@ -14,22 +14,89 @@ export type Memory = {
   created_at: string
   updated_at: string
   last_reinforced_at: string | null
+  last_accessed_at: string | null
+  access_count: number
+  importance: number
+  lifecycle: string
+  type: string
   archived: number
 }
 
-function computeTier(strength: number): string {
+export const MEMORY_TYPES = [
+  "preference",
+  "insight",
+  "instruction",
+  "fact",
+  "decision",
+  "episodic",
+] as const
+
+export type MemoryType = (typeof MEMORY_TYPES)[number]
+
+export const LIFECYCLE_ORDER = ["temporary", "active", "permanent", "archived"] as const
+export type Lifecycle = (typeof LIFECYCLE_ORDER)[number]
+
+// Adaptive decay constants (ported from the LanXin memory_system_manager decay_v2).
+const BASE_HALF_LIFE = 7.0 // days
+const MIN_HALF_LIFE = 1.5
+const MAX_HALF_LIFE = 30.0
+const ACCESS_BONUS = 0.15 // per access, capped at +150%
+const IMPORTANCE_WEIGHT = 0.3
+const RECENCY_WEIGHT = 0.2
+const PROMOTE_THRESHOLD = 15 // accesses
+const PROMOTE_PERMANENT_THRESHOLD = 30 // accesses
+const DEMOTE_THRESHOLD = 30 // inactive days
+const ARCHIVE_THRESHOLD = 90 // inactive days
+
+/** Next lifecycle level given current access count (temporary->active->permanent). */
+function nextLifecycle(lifecycle: string, access: number): { lifecycle: string; promoted: boolean } {
+  const level = lifecycleLevel(lifecycle)
+  if (level >= 2) return { lifecycle, promoted: false }
+  const threshold = level === 0 ? PROMOTE_THRESHOLD : PROMOTE_PERMANENT_THRESHOLD
+  if (access >= threshold) {
+    return { lifecycle: LIFECYCLE_ORDER[level + 1], promoted: true }
+  }
+  return { lifecycle, promoted: false }
+}
+
+export function computeTier(strength: number): string {
   if (strength >= 5) return "hot"
   if (strength >= 2) return "warm"
   if (strength >= 1) return "cold"
   return "evictable"
 }
 
-export function memoryAdd(content: string, opts?: { source?: string; project?: string }) {
+function calcHalfLife(strength: number, accessCount: number, inactiveDays: number, importance: number): number {
+  let hl = BASE_HALF_LIFE
+  hl *= 1 + Math.min(accessCount * ACCESS_BONUS, 1.5)
+  hl *= 1 + ((importance - 5) / 10) * IMPORTANCE_WEIGHT
+  if (inactiveDays < 1) hl *= 1 + RECENCY_WEIGHT
+  return Math.max(MIN_HALF_LIFE, Math.min(MAX_HALF_LIFE, hl))
+}
+
+/** Exponential half-life decay: new = old * 0.5^(inactiveDays/halfLife). */
+function applyDecay(strength: number, accessCount: number, inactiveDays: number, importance: number): number {
+  const hl = calcHalfLife(strength, accessCount, inactiveDays, importance)
+  const factor = Math.pow(0.5, inactiveDays / hl)
+  return Math.max(0.05, strength * factor)
+}
+
+export function lifecycleLevel(lc: string): number {
+  const i = LIFECYCLE_ORDER.indexOf(lc as Lifecycle)
+  return i === -1 ? 1 : i
+}
+
+export function memoryAdd(
+  content: string,
+  opts?: { source?: string; project?: string; importance?: number; type?: MemoryType }
+) {
   const db = getDb()
   const ts = now()
+  const importance = Math.max(1, Math.min(10, opts?.importance ?? 5))
+  const type = opts?.type && MEMORY_TYPES.includes(opts.type) ? opts.type : "fact"
   const info = db
     .query(
-      "INSERT INTO memories (content, source, project, strength, tier, created_at, updated_at, last_reinforced_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)"
+      "INSERT INTO memories (content, source, project, strength, tier, importance, lifecycle, type, created_at, updated_at, last_reinforced_at, last_accessed_at, access_count, archived) VALUES (?, ?, ?, ?, ?, ?, 'temporary', ?, ?, ?, ?, ?, 0, 0)"
     )
     .run(
       content,
@@ -37,11 +104,14 @@ export function memoryAdd(content: string, opts?: { source?: string; project?: s
       opts?.project ?? null,
       1,
       computeTier(1),
+      importance,
+      type,
+      ts,
       ts,
       ts,
       ts
     )
-  return { id: Number(info.lastInsertRowid), content, tier: computeTier(1) }
+  return { id: Number(info.lastInsertRowid), content, tier: computeTier(1), type, importance }
 }
 
 export function memoryList(opts?: { archived?: boolean; tier?: string; limit?: number }): Memory[] {
@@ -64,13 +134,19 @@ export function memoryStrengthen(keyword: string) {
     .all(`%${keyword}%`) as Memory[]
   if (rows.length === 0) return { matched: 0, message: `No memory matches "${keyword}"` }
   const ts = now()
+  const promoted: number[] = []
   for (const r of rows) {
     const newStrength = r.strength + 1
+    const access = (r.access_count ?? 0) + 1
+    // lifecycle promotion: frequent access upgrades temporary -> active -> permanent
+    const cur = r.lifecycle ?? "temporary"
+    const nxt = nextLifecycle(cur, access)
+    if (nxt.promoted) promoted.push(r.id)
     db.query(
-      "UPDATE memories SET strength = ?, tier = ?, updated_at = ?, last_reinforced_at = ? WHERE id = ?"
-    ).run(newStrength, computeTier(newStrength), ts, ts, r.id)
+      "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
+    ).run(newStrength, computeTier(newStrength), access, nxt.lifecycle, ts, ts, ts, r.id)
   }
-  return { matched: rows.length, ids: rows.map((r) => r.id) }
+  return { matched: rows.length, ids: rows.map((r) => r.id), promoted }
 }
 
 export function memoryWeaken(keyword: string) {
@@ -80,13 +156,20 @@ export function memoryWeaken(keyword: string) {
     .all(`%${keyword}%`) as Memory[]
   if (rows.length === 0) return { matched: 0, message: `No memory matches "${keyword}"` }
   const ts = now()
+  const demoted: number[] = []
   for (const r of rows) {
     const newStrength = Math.max(0, r.strength - 1)
+    // lifecycle demotion on manual weaken
+    let lifecycle = r.lifecycle ?? "temporary"
+    if (lifecycleLevel(lifecycle) > 0 && newStrength < 2) {
+      lifecycle = LIFECYCLE_ORDER[lifecycleLevel(lifecycle) - 1]
+      demoted.push(r.id)
+    }
     db.query(
-      "UPDATE memories SET strength = ?, tier = ?, updated_at = ? WHERE id = ?"
-    ).run(newStrength, computeTier(newStrength), ts, r.id)
+      "UPDATE memories SET strength = ?, tier = ?, lifecycle = ?, updated_at = ? WHERE id = ?"
+    ).run(newStrength, computeTier(newStrength), lifecycle, ts, r.id)
   }
-  return { matched: rows.length, ids: rows.map((r) => r.id) }
+  return { matched: rows.length, ids: rows.map((r) => r.id), demoted }
 }
 
 export function memoryRemove(keyword: string) {
@@ -110,38 +193,87 @@ export function memorySummary(): { hot: number; warm: number; cold: number; evic
   return out
 }
 
+export function memoryBrief(): {
+  active: number
+  archived: number
+  addedToday: number
+  byType: Record<string, number>
+  byLifecycle: Record<string, number>
+  health: string[]
+} {
+  const db = getDb()
+  const today = new Date().toISOString().slice(0, 10)
+  const active = (db.query("SELECT COUNT(*) AS n FROM memories WHERE archived = 0").get() as { n: number }).n
+  const archived = (db.query("SELECT COUNT(*) AS n FROM memories WHERE archived = 1").get() as { n: number }).n
+  const addedToday = (db.query("SELECT COUNT(*) AS n FROM memories WHERE archived = 0 AND created_at >= ?").get(today) as { n: number }).n
+  const byType: Record<string, number> = {}
+  for (const r of db.query("SELECT type, COUNT(*) AS n FROM memories WHERE archived = 0 GROUP BY type").all() as Array<{ type: string; n: number }>) {
+    byType[r.type] = r.n
+  }
+  const byLifecycle: Record<string, number> = {}
+  for (const r of db.query("SELECT lifecycle, COUNT(*) AS n FROM memories WHERE archived = 0 GROUP BY lifecycle").all() as Array<{ lifecycle: string; n: number }>) {
+    byLifecycle[r.lifecycle] = r.n
+  }
+  const health: string[] = []
+  if (addedToday > 0) health.push(`${addedToday} new memories today`)
+  if ((byLifecycle["temporary"] ?? 0) > 20) health.push("many temporary memories — review for promotion or cleanup")
+  if (archived > active) health.push("more archived than active memories — consider cleanup/vacuum")
+  if (active === 0) health.push("no active memories yet")
+  return { active, archived, addedToday, byType, byLifecycle, health }
+}
+
 const DAY_MS = 86400000
 
 /**
- * Time-based decay: memories not reinforced for `decayDays` lose strength
- * (drop tier); once strength <= 1 and older than `archiveDays`, they are
- * archived. Prevents stale lessons from accumulating.
+ * Adaptive exponential decay + lifecycle management.
+ * - Strength decays with a half-life that adapts to access frequency, importance and recency.
+ * - Memories inactive >= DEMOTE_THRESHOLD days drop one lifecycle level (permanent->active->temporary).
+ * - Memories below strength 1 and inactive >= ARCHIVE_THRESHOLD days are archived.
  * Call periodically (e.g. on session idle / plugin load).
  */
-export function memoryDecay(opts?: { decayDays?: number; archiveDays?: number }) {
-  const decayDays = opts?.decayDays ?? (Number(getConfig("memory_decay_days", "30")) || 30)
+export function memoryDecay(opts?: { archiveDays?: number; demoteDays?: number }) {
   const archiveDays = opts?.archiveDays ?? (Number(getConfig("memory_archive_days", "120")) || 120)
+  const demoteDays = opts?.demoteDays ?? (Number(getConfig("memory_demote_days", String(DEMOTE_THRESHOLD))) || DEMOTE_THRESHOLD)
   const nowMs = Date.now()
   const db = getDb()
   const rows = db.query("SELECT * FROM memories WHERE archived = 0").all() as Memory[]
   let decayed = 0
   let archived = 0
+  let demoted = 0
+  const ts = now()
   for (const r of rows) {
-    const last = r.last_reinforced_at ? new Date(r.last_reinforced_at).getTime() : nowMs
-    const ageDays = (nowMs - last) / DAY_MS
-    if (ageDays < decayDays) continue
-    if (r.strength <= 1 && ageDays > archiveDays) {
-      db.query("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(now(), r.id)
+    const last = r.last_reinforced_at || r.last_accessed_at
+    const ref = last ? new Date(last).getTime() : nowMs
+    const ageDays = (nowMs - ref) / DAY_MS
+    const importance = r.importance ?? 5
+    const access = r.access_count ?? 0
+    const life = r.lifecycle ?? "temporary"
+
+    // lifecycle demotion by inactivity
+    if (lifecycleLevel(life) > 0 && ageDays >= demoteDays) {
+      const next = LIFECYCLE_ORDER[lifecycleLevel(life) - 1]
+      db.query("UPDATE memories SET lifecycle = ?, updated_at = ? WHERE id = ?").run(next, ts, r.id)
+      demoted++
+    }
+
+    // archive very old, low-value memories
+    if (r.strength <= 1 && ageDays >= archiveDays) {
+      db.query("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(ts, r.id)
       archived++
       continue
     }
-    const ns = Math.max(0, r.strength - 1)
-    db.query(
-      "UPDATE memories SET strength = ?, tier = ?, updated_at = ? WHERE id = ?"
-    ).run(ns, computeTier(ns), now(), r.id)
-    decayed++
+
+    // adaptive exponential decay of strength
+    const ns = applyDecay(r.strength, access, ageDays, importance)
+    const rounded = Math.round(ns)
+    if (rounded !== r.strength) {
+      db.query(
+        "UPDATE memories SET strength = ?, tier = ?, updated_at = ? WHERE id = ?"
+      ).run(rounded, computeTier(rounded), ts, r.id)
+      decayed++
+    }
   }
-  return { decayed, archived }
+  return { decayed, archived, demoted }
 }
 
 /** Token-set similarity for lightweight dedup (latin + CJK). */
@@ -155,7 +287,10 @@ function similarity(a: string, b: string): number {
 }
 
 /** Dedup-aware add: strengthen the best near-duplicate (sim >= 0.7) instead of inserting. */
-export function memoryAddDedup(content: string, opts?: { source?: string; project?: string }) {
+export function memoryAddDedup(
+  content: string,
+  opts?: { source?: string; project?: string; importance?: number; type?: MemoryType }
+) {
   const rows = getDb().query("SELECT * FROM memories WHERE archived = 0").all() as Memory[]
   let best: Memory | undefined
   let bestSim = 0
@@ -169,12 +304,21 @@ export function memoryAddDedup(content: string, opts?: { source?: string; projec
   if (best && bestSim >= 0.7) {
     const ts = now()
     const newStrength = best.strength + 1
+    const access = (best.access_count ?? 0) + 1
+    const lifecycle = nextLifecycle(best.lifecycle ?? "temporary", access).lifecycle
     getDb()
       .query(
-        "UPDATE memories SET strength = ?, tier = ?, updated_at = ?, last_reinforced_at = ? WHERE id = ?"
+        "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
       )
-      .run(newStrength, computeTier(newStrength), ts, ts, best.id)
-    return { merged: true, id: best.id, strength: newStrength, tier: computeTier(newStrength) }
+      .run(newStrength, computeTier(newStrength), access, lifecycle, ts, ts, ts, best.id)
+    return {
+      merged: true,
+      id: best.id,
+      strength: newStrength,
+      tier: computeTier(newStrength),
+      lifecycle,
+      type: best.type ?? "fact",
+    }
   }
   return { merged: false, ...memoryAdd(content, opts) }
 }
@@ -213,7 +357,17 @@ export function memoryRecall(query: string, opts?: { minScore?: number; limit?: 
     scored.push({ m, score: hits + tierBonus })
   }
   scored.sort((a, b) => b.score - a.score)
-  return scored.slice(0, limit).map((x) => x.m)
+  const top = scored.slice(0, limit)
+  // access feedback: recalls reinforce last_accessed_at (feeds the decay/recency model)
+  if (top.length > 0) {
+    const ts = now()
+    for (const x of top) {
+      getDb()
+        .query("UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?")
+        .run(ts, x.m.id)
+    }
+  }
+  return top.map((x) => x.m)
 }
 
 export function composeMemoryContext(): string {
@@ -235,7 +389,8 @@ export function composeMemoryContext(): string {
   }
   md += "## Persistent Lessons\n\n"
   for (const m of memories) {
-    md += `- [${m.tier}/${m.strength}] ${m.content}\n`
+    const lc = m.lifecycle && m.lifecycle !== "temporary" ? ` ${m.lifecycle}` : ""
+    md += `- [${m.tier}/${m.strength}${lc}] ${m.content}\n`
   }
   writeFileSync(CONTEXT_FILE, md)
   return md

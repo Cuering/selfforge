@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at TEXT,
   updated_at TEXT,
   last_reinforced_at TEXT,
+  last_accessed_at TEXT,
+  access_count INTEGER DEFAULT 0,
+  importance INTEGER DEFAULT 5,
+  lifecycle TEXT DEFAULT 'temporary',
+  type TEXT DEFAULT 'fact',
   archived INTEGER DEFAULT 0
 );
 
@@ -138,7 +143,27 @@ export function initDb(): Database {
   mkdirSync(REVIEWS_DIR, { recursive: true })
   db = new Database(DB_PATH, { create: true })
   db.exec(SCHEMA)
+  migrate(db)
   return db
+}
+
+/** Lightweight additive migration for DBs created before v1.1. */
+function migrate(d: Database) {
+  const tableCols = (table: string): Set<string> => {
+    const rows = d.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    return new Set(rows.map((r) => r.name))
+  }
+  const cols = tableCols("memories")
+  const adds: Array<[string, string]> = [
+    ["last_accessed_at", "TEXT"],
+    ["access_count", "INTEGER DEFAULT 0"],
+    ["importance", "INTEGER DEFAULT 5"],
+    ["lifecycle", "TEXT DEFAULT 'temporary'"],
+    ["type", "TEXT DEFAULT 'fact'"],
+  ]
+  for (const [name, decl] of adds) {
+    if (!cols.has(name)) d.exec(`ALTER TABLE memories ADD COLUMN ${name} ${decl}`)
+  }
 }
 
 export function getDb(): Database {
@@ -178,5 +203,16 @@ export function closeDb() {
   try {
     db?.close()
   } catch {}
+}
+
+/** Reclaim deleted space. Run infrequently (VACUUM is O(db)). */
+export function vacuumDb(): { reclaimed: boolean } {
+  try {
+    const before = db?.query("PRAGMA freelist_count").get() as { freelist_count: number } | undefined
+    db?.exec("VACUUM")
+    return { reclaimed: !!before && before.freelist_count > 0 }
+  } catch (err) {
+    return { reclaimed: false }
+  }
 }
 
