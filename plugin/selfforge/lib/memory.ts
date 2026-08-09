@@ -1,11 +1,13 @@
 import { writeFileSync } from "fs"
 import { join } from "path"
-import { getDb, getConfig, now, EVOLVE_HOME } from "./db"
+import { getDb, getConfig, now, EVOLVE_HOME, stamp } from "./db"
 
 export const CONTEXT_FILE = join(EVOLVE_HOME, "memory.context.md")
 
 export type Memory = {
   id: number
+  uuid: string | null
+  origin: string | null
   content: string
   source: string
   project: string | null
@@ -24,6 +26,7 @@ export type Memory = {
   status: string
   confidence: number
   expires_at: string | null
+  deleted: number
 }
 
 export const MEMORY_TYPES = [
@@ -133,11 +136,14 @@ export function memoryAdd(
   const type = opts?.type && MEMORY_TYPES.includes(opts.type) ? opts.type : "fact"
   const status = opts?.status === "candidate" ? "candidate" : "confirmed"
   const confidence = Math.max(1, Math.min(10, opts?.confidence ?? (status === "candidate" ? 4 : 8)))
+  const st = stamp()
   const info = db
     .query(
-      "INSERT INTO memories (content, source, project, strength, tier, importance, lifecycle, type, scope, status, confidence, expires_at, created_at, updated_at, last_reinforced_at, last_accessed_at, access_count, archived) VALUES (?, ?, ?, ?, ?, ?, 'temporary', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)"
+      "INSERT INTO memories (uuid, origin, content, source, project, strength, tier, importance, lifecycle, type, scope, status, confidence, expires_at, created_at, updated_at, last_reinforced_at, last_accessed_at, access_count, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'temporary', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)"
     )
     .run(
+      st.uuid,
+      st.origin,
       content,
       opts?.source ?? "manual",
       opts?.project ?? null,
@@ -236,7 +242,7 @@ export function memoryRemove(keyword: string) {
     .all(`%${keyword}%`) as Memory[]
   if (rows.length === 0) return { matched: 0, message: `No memory matches "${keyword}"` }
   for (const r of rows) {
-    db.query("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(now(), r.id)
+    db.query("UPDATE memories SET archived = 1, deleted = 1, updated_at = ? WHERE id = ?").run(now(), r.id)
   }
   return { archived: rows.length, ids: rows.map((r) => r.id) }
 }
@@ -304,7 +310,7 @@ export function memoryReject(id: number): { ok: boolean; message: string } {
   const db = getDb()
   const row = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
   if (!row) return { ok: false, message: `No memory with id ${id}` }
-  db.query("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(now(), id)
+  db.query("UPDATE memories SET archived = 1, deleted = 1, updated_at = ? WHERE id = ?").run(now(), id)
   return { ok: true, message: `Memory ${id} rejected and archived` }
 }
 

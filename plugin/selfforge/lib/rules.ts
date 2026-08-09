@@ -1,10 +1,12 @@
 import { existsSync, readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
-import { getDb, now } from "./db"
+import { getDb, now, stamp } from "./db"
 
 export type Rule = {
   id: number
+  uuid: string | null
+  origin: string | null
   rule: string
   project: string | null
   domain: string
@@ -14,6 +16,7 @@ export type Rule = {
   written_to: string | null
   created_at: string
   updated_at: string
+  deleted: number
 }
 
 export const DOMAINS = [
@@ -49,13 +52,16 @@ export function ruleObserve(opts: {
     ).run(count, total, ts, existing.id)
     rule = { ...existing, count, total_count: total, updated_at: ts }
   } else {
+    const st = stamp()
     const info = db
       .query(
-        "INSERT INTO rules (rule, project, domain, explicit_scope, count, total_count, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1, ?, ?)"
+        "INSERT INTO rules (uuid, origin, rule, project, domain, explicit_scope, count, total_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?)"
       )
-      .run(opts.rule, opts.project ?? null, domain, scope, ts, ts)
+      .run(st.uuid, st.origin, opts.rule, opts.project ?? null, domain, scope, ts, ts)
     rule = {
       id: Number(info.lastInsertRowid),
+      uuid: st.uuid,
+      origin: st.origin,
       rule: opts.rule,
       project: opts.project ?? null,
       domain,
@@ -65,6 +71,7 @@ export function ruleObserve(opts: {
       written_to: null,
       created_at: ts,
       updated_at: ts,
+      deleted: 0,
     }
   }
   return { rule, recommendation: recommend(rule) }

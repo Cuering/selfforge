@@ -1,8 +1,10 @@
-import { getDb, now } from "./db"
+import { getDb, now, stamp } from "./db"
 import { Skill, skillList, markSkillOptimized, skillPatch } from "./skills"
 
 export type Evolution = {
   id: number
+  uuid: string | null
+  origin: string | null
   skill_id: number
   strategy: string
   candidate: string
@@ -10,6 +12,7 @@ export type Evolution = {
   status: string
   created_at: string
   applied_at: string | null
+  deleted: number
 }
 
 export function evolutionCandidates(opts?: { minUse?: number; minFail?: number }) {
@@ -35,11 +38,12 @@ export function evolutionPropose(opts: { skill: string; strategy: string; candid
   const db = getDb()
   const skill = db.query("SELECT * FROM skills WHERE name = ?").get(opts.skill) as Skill | undefined
   if (!skill) return { error: `Skill "${opts.skill}" not found` }
+  const st = stamp()
   const info = db
     .query(
-      "INSERT INTO evolution (skill_id, strategy, candidate, rationale, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)"
+      "INSERT INTO evolution (uuid, origin, skill_id, strategy, candidate, rationale, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)"
     )
-    .run(skill.id, opts.strategy, opts.candidate, opts.rationale ?? null, now())
+    .run(st.uuid, st.origin, skill.id, opts.strategy, opts.candidate, opts.rationale ?? null, now())
   return { id: Number(info.lastInsertRowid), skill: opts.skill, status: "pending" }
 }
 

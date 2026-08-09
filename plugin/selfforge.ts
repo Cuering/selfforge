@@ -21,7 +21,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     (directory || worktree || process.cwd()).split(/[\\/]/).pop() || "unknown"
 
   composeMemoryContext()
-  logObs("plugin_loaded", { version: "1.3.0" }, projectName())
+  logObs("plugin_loaded", { version: "1.5.0" }, projectName())
   try {
     memoryDecay()
   } catch {}

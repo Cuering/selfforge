@@ -1,7 +1,9 @@
-import { getDb, now } from "./db"
+import { getDb, now, stamp } from "./db"
 
 export type Goal = {
   id: number
+  uuid: string | null
+  origin: string | null
   goal: string
   north_star: string | null
   completion_criteria: string | null
@@ -12,15 +14,19 @@ export type Goal = {
   project: string | null
   created_at: string
   updated_at: string
+  deleted: number
 }
 
 export type Checkpoint = {
   id: number
+  uuid: string | null
+  origin: string | null
   goal_id: number
   cp: string
   status: string
   notes: string | null
   created_at: string
+  deleted: number
 }
 
 const CP_ORDER = [
@@ -47,11 +53,14 @@ export function goalStart(opts: {
 }) {
   const db = getDb()
   const ts = now()
+  const st = stamp()
   const info = db
     .query(
-      "INSERT INTO goals (goal, north_star, completion_criteria, status, level, iteration, max_iterations, project, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, 0, ?, ?, ?, ?)"
+      "INSERT INTO goals (uuid, origin, goal, north_star, completion_criteria, status, level, iteration, max_iterations, project, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, 0, ?, ?, ?, ?)"
     )
     .run(
+      st.uuid,
+      st.origin,
       opts.goal,
       opts.northStar ?? null,
       opts.completionCriteria ?? null,
@@ -69,7 +78,10 @@ export function goalStart(opts: {
 function seedCheckpoints(goalId: number) {
   const db = getDb()
   for (const cp of CP_ORDER) {
-    db.query("INSERT INTO checkpoints (goal_id, cp, status, created_at) VALUES (?, ?, 'pending', ?)").run(
+    const st = stamp()
+    db.query("INSERT INTO checkpoints (uuid, origin, goal_id, cp, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)").run(
+      st.uuid,
+      st.origin,
       goalId,
       cp,
       now()
@@ -94,9 +106,10 @@ export function goalCheckpoint(opts: { goalId: number; cp: string; status?: stri
       existing.id
     )
   } else {
+    const st = stamp()
     db.query(
-      "INSERT INTO checkpoints (goal_id, cp, status, notes, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(opts.goalId, opts.cp, status, opts.notes ?? null, now())
+      "INSERT INTO checkpoints (uuid, origin, goal_id, cp, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(st.uuid, st.origin, opts.goalId, opts.cp, status, opts.notes ?? null, now())
   }
   if (opts.cp === "CP3") {
     db.query("UPDATE goals SET iteration = iteration + 1, updated_at = ? WHERE id = ?").run(

@@ -114,14 +114,31 @@ All data is stored locally under `~/.evolve/`. Nothing leaves your machine. No o
 The plugin is modular so each upgrade touches the smallest possible surface:
 
 - `plugin/selfforge.ts` — thin entry: lifecycle hooks only (event buffering, threshold/idle review, goal/evolution advisories, dispose).
-- `plugin/selfforge/lib/` — data layer: `db`, `memory`, `skills`, `rules`, `goals`, `evolution`, `review`, `user`.
+- `plugin/selfforge/lib/` — **engine layer, zero OpenCode dependency**: `db`, `memory`, `skills`, `rules`, `goals`, `evolution`, `review`, `user`, plus `index.ts` as the engine import surface (usable by CLI/RPC/other agents).
 - `plugin/selfforge/lib/tools/` — tool registration grouped by domain: `memory.ts`, `user.ts`, `skills.ts`, `rules.ts`, `goals.ts`, `evolution.ts`, `curator.ts`. Add or fix a tool here without touching the entry.
+
+## Sync-ready rows (Phase 0)
+
+Every data table (`memories`, `skills`, `rules`, `goals`, `checkpoints`, `evolution`, `observations`, `user_profile`) carries row-level identity so replicas can be merged across agents, machines and platforms:
+
+- `uuid` — unique row id (RFC 4122), backfilled on legacy DBs at migration.
+- `origin` — the `node_id` that created the row (persisted in `config`).
+- `deleted` — tombstone: soft deletes set `deleted = 1` so removals replicate.
+- Lamport clock in `config.lamport_clock`, bumped by `db.stamp()` on every write for conflict ordering.
 
 ## License
 
 MIT
 
 ## Version history
+
+### v1.5.0 (2026-08-09) Sync primitives (Phase 0)
+
+- Row-level sync identity on all data tables: `uuid` + `origin` + `deleted` tombstone; legacy DBs backfilled idempotently at migration.
+- `node_id` persisted in `config`; Lamport clock (`config.lamport_clock`) bumped on every write — the foundation for cross-agent / cross-platform / team-synced memory.
+- Explicit deletions (memory remove/reject, skill archive, profile remove) set the tombstone so they replicate as removals, not leftovers.
+- Export surface: `lib/index.ts` re-exports the engine independently of the OpenCode adapter.
+- New test suite `tests/sync.test.ts` (node id, clock monotonicity, stamping, tombstones, migration backfill).
 
 ### v1.4.0 (2026-08-09) Modularized entry
 

@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "fs"
 import { join } from "path"
-import { getDb, now } from "./db"
+import { getDb, now, stamp } from "./db"
 import { SKILLS_DIR } from "./db"
 
 export type Skill = {
   id: number
+  uuid: string | null
+  origin: string | null
   name: string
   description: string | null
   content: string | null
@@ -15,6 +17,7 @@ export type Skill = {
   created_at: string
   updated_at: string
   last_used_at: string | null
+  deleted: number
 }
 
 const FRONTMATTER = (name: string, description: string) =>
@@ -39,12 +42,13 @@ export function skillCreate(name: string, description: string, body = "") {
   const existing = db.query("SELECT * FROM skills WHERE name = ?").get(slug)
   if (existing) return { error: `Skill "${slug}" already exists`, id: (existing as Skill).id }
   const ts = now()
+  const st = stamp()
   const content = FRONTMATTER(slug, description) + (body || `# ${slug}\n\n${description}\n`)
   const info = db
     .query(
-      "INSERT INTO skills (name, description, content, status, usage_count, fail_count, created_at, updated_at) VALUES (?, ?, ?, 'active', 0, 0, ?, ?)"
+      "INSERT INTO skills (uuid, origin, name, description, content, status, usage_count, fail_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 0, 0, ?, ?)"
     )
-    .run(slug, description, content, ts, ts)
+    .run(st.uuid, st.origin, slug, description, content, ts, ts)
   const dir = join(SKILLS_DIR, slug)
   mkdirSync(dir, { recursive: true })
   writeFileSync(skillPath(slug), content)
@@ -90,7 +94,7 @@ export function skillArchive(name: string) {
   const db = getDb()
   const skill = db.query("SELECT * FROM skills WHERE name = ?").get(name) as Skill | undefined
   if (!skill) return { error: `Skill "${name}" not found` }
-  db.query("UPDATE skills SET status = 'archived', updated_at = ? WHERE id = ?").run(now(), skill.id)
+  db.query("UPDATE skills SET status = 'archived', deleted = 1, updated_at = ? WHERE id = ?").run(now(), skill.id)
   const src = join(SKILLS_DIR, name)
   const dst = join(SKILLS_DIR, ".archive", name)
   try {
@@ -147,9 +151,10 @@ export function syncSkillsToDisk() {
       if (!existing) {
         const content = require("fs").readFileSync(p, "utf-8")
         const descMatch = content.match(/^description:\s*(.+)$/m)
+        const st = stamp()
         db.query(
-          "INSERT INTO skills (name, description, content, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)"
-        ).run(entry.name, descMatch?.[1] ?? entry.name, content, now(), now())
+          "INSERT INTO skills (uuid, origin, name, description, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)"
+        ).run(st.uuid, st.origin, entry.name, descMatch?.[1] ?? entry.name, content, now(), now())
       }
     }
   } catch {}
