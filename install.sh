@@ -15,6 +15,8 @@ mkdir -p "$CONFIG_DIR/plugins"
 cp "$REPO_DIR/plugin/selfforge.ts" "$CONFIG_DIR/plugins/"
 mkdir -p "$CONFIG_DIR/plugins/selfforge/lib"
 cp "$REPO_DIR"/plugin/selfforge/lib/*.ts "$CONFIG_DIR/plugins/selfforge/lib/"
+mkdir -p "$CONFIG_DIR/plugins/selfforge/lib/tools"
+cp "$REPO_DIR"/plugin/selfforge/lib/tools/*.ts "$CONFIG_DIR/plugins/selfforge/lib/tools/"
 
 # 2. Copy skills
 echo "[2/4] Installing skills..."

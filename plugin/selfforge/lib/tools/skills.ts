@@ -1,0 +1,67 @@
+import { tool } from "@opencode-ai/plugin"
+import { skillCreate, skillPatch, skillArchive, skillList, skillUsage } from "../skills"
+import { logObs } from "../db"
+
+export const skillTools = {
+  skill_create: tool({
+    description:
+      "Create a new skill from distilled knowledge. Name is auto-slugified. Body appended if empty.",
+    args: {
+      name: tool.schema.string(),
+      description: tool.schema.string(),
+      body: tool.schema.string().optional().describe("Optional SKILL.md body"),
+    },
+    async execute(args, ctx) {
+      const res = skillCreate(args.name, args.description, args.body)
+      logObs("skill_create", res, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
+    },
+  }),
+
+  skill_patch: tool({
+    description:
+      "Patch a skill. section=description replaces frontmatter description; section=body replaces body; other sections append a new '## section' block.",
+    args: {
+      name: tool.schema.string(),
+      section: tool.schema.string(),
+      content: tool.schema.string(),
+    },
+    async execute(args, ctx) {
+      const res = skillPatch(args.name, args.section, args.content)
+      logObs("skill_patch", res, ctx.directory)
+      return { output: JSON.stringify(res) }
+    },
+  }),
+
+  skill_list: tool({
+    description: "List all skills with usage counts.",
+    args: {},
+    async execute() {
+      const rows = skillList()
+      if (rows.length === 0) return { output: "No skills yet." }
+      return {
+        output: rows
+          .map((s) => `- ${s.name} [${s.status}] use=${s.usage_count} fail=${s.fail_count}`)
+          .join("\n"),
+      }
+    },
+  }),
+
+  skill_archive: tool({
+    description: "Archive a skill (moved to .archive, marked archived).",
+    args: { name: tool.schema.string() },
+    async execute(args, ctx) {
+      const res = skillArchive(args.name)
+      logObs("skill_archive", res, ctx.directory)
+      return { output: JSON.stringify(res) }
+    },
+  }),
+
+  skill_usage: tool({
+    description: "Show skill usage telemetry (uses, failures, last used).",
+    args: {},
+    async execute() {
+      return { output: JSON.stringify(skillUsage(), null, 2) }
+    },
+  }),
+}
