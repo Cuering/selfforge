@@ -109,11 +109,24 @@ Memory tiers and lifecycle: each memory is ranked into hot/warm/cold/evictable b
 
 All data is stored locally under `~/.evolve/`. Nothing leaves your machine. No outbound requests.
 
+## Structure
+
+The plugin is modular so each upgrade touches the smallest possible surface:
+
+- `plugin/selfforge.ts` — thin entry: lifecycle hooks only (event buffering, threshold/idle review, goal/evolution advisories, dispose).
+- `plugin/selfforge/lib/` — data layer: `db`, `memory`, `skills`, `rules`, `goals`, `evolution`, `review`, `user`.
+- `plugin/selfforge/lib/tools/` — tool registration grouped by domain: `memory.ts`, `user.ts`, `skills.ts`, `rules.ts`, `goals.ts`, `evolution.ts`, `curator.ts`. Add or fix a tool here without touching the entry.
+
 ## License
 
 MIT
 
 ## Version history
+
+### v1.4.0 (2026-08-09) Modularized entry
+
+- Tool registration moved out of the entry file into `lib/tools/*` grouped by domain (memory/user/skills/rules/goals/evolution/curator). The entry now holds lifecycle hooks only.
+- `install.sh` copies the new `lib/tools/` directory; no `opencode.json` changes required.
 
 ### v1.3.0 (2026-08-09) Memory contract & contamination defense
 

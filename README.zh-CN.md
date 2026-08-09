@@ -111,6 +111,11 @@ opencode插件（selfforge.ts）
 
 ## 版本更新说明
 
+### v1.4.0（2026-08-09）入口模块化
+
+- 工具注册从入口文件拆分到`lib/tools/*`，按领域分组（memory/user/skills/rules/goals/evolution/curator），入口仅保留生命周期钩子。
+- `install.sh`新增`lib/tools/`目录拷贝，无需改动`opencode.json`。
+
 ### v1.3.0（2026-08-09）记忆契约与防污染
 
 - 候选区：自动推断的记忆以`candidate`状态入库，未经人工确认（`memory_candidates`/`memory_confirm`/`memory_reject`）绝不召回或注入；用户显式陈述直接以confirmed写入。
