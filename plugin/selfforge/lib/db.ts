@@ -31,6 +31,28 @@ CREATE TABLE IF NOT EXISTS memories (
   archived INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  project TEXT,
+  turn_count INTEGER DEFAULT 0,
+  last_review_turn INTEGER DEFAULT 0,
+  last_idle_review INTEGER DEFAULT 0,
+  buffer TEXT DEFAULT '[]',
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  role TEXT,
+  content TEXT NOT NULL,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages (session_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS session_messages_fts USING fts5(content);
+
 CREATE TABLE IF NOT EXISTS user_profile (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   keyword TEXT UNIQUE,

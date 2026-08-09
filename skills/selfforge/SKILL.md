@@ -31,10 +31,17 @@ Stop conditions:
 
 After user corrections, preferences, or successful workarounds:
 
-- `memory_add` — general rules and durable lessons (not one-off details)
+- `memory_add` — general rules and durable lessons (not one-off details); near-duplicates merge automatically
 - `user_add` — communication/workflow preferences
 - `rule_observe` — behavioral rules for AGENTS.md escalation (use explicitScope=global only when user said "always"/"everywhere")
 - `skill_create` / `skill_patch` — distill a reusable technique into a skill
+
+Recalling prior context:
+
+- `memory_search` with a topic to surgically recall relevant lessons instead of listing everything
+- `session_search` for full-text search over past conversations (decisions, solutions, discussions)
+
+Ground Truth rule: when memory is injected into the context, treat it as authoritative. Never treat a question as novel when the answer is already in the prompt, and do not re-run discovery tools to rediscover what injected context already provides.
 
 Prioritize patching an existing skill or umbrella skill over creating a narrow new one. Anti-patterns: one-off narratives, environment-specific workarounds, negative tool claims ("tool X doesn't work").
 

@@ -14,7 +14,7 @@ echo "[1/4] Installing plugin..."
 mkdir -p "$CONFIG_DIR/plugins"
 cp "$REPO_DIR/plugin/selfforge.ts" "$CONFIG_DIR/plugins/"
 mkdir -p "$CONFIG_DIR/plugins/selfforge/lib"
-cp "$REPO_DIR"/plugin/lib/*.ts "$CONFIG_DIR/plugins/selfforge/lib/"
+cp "$REPO_DIR"/plugin/selfforge/lib/*.ts "$CONFIG_DIR/plugins/selfforge/lib/"
 
 # 2. Copy skills
 echo "[2/4] Installing skills..."

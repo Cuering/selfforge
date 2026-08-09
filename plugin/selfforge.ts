@@ -1,13 +1,13 @@
 ﻿import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 import { initDb, setConfig, getConfig, now, logObs, closeDb } from "./selfforge/lib/db"
-import { memoryAdd, memoryList, memoryStrengthen, memoryWeaken, memoryRemove, memorySummary, composeMemoryContext } from "./selfforge/lib/memory"
+import { memoryAdd, memoryAddDedup, memoryList, memoryStrengthen, memoryWeaken, memoryRemove, memorySummary, memoryRecall, memoryDecay, composeMemoryContext } from "./selfforge/lib/memory"
 import { userAdd, userList, userRemove } from "./selfforge/lib/user"
 import { skillCreate, skillPatch, skillArchive, skillList, skillUsage, syncSkillsToDisk, recordSkillUse } from "./selfforge/lib/skills"
 import { ruleObserve, ruleStatus, ruleDue, escalate, ruleHistory } from "./selfforge/lib/rules"
 import { goalStart, goalStatus, goalCheckpoint, goalComplete, goalStop, goalAdvisory } from "./selfforge/lib/goals"
 import { evolutionPropose, evolutionList, evolutionStatus, evolutionApply, evolutionReject, evolutionAdvisory, pickEvolutionCandidate } from "./selfforge/lib/evolution"
-import { redact, truncate, spawnReview, getSession, sessionSet, bufferPush, curatorRun, curatorStatus } from "./selfforge/lib/review"
+import { redact, truncate, spawnReview, getSession, sessionSet, bufferPush, isTrivial, sessionSearch, curatorRun, curatorStatus } from "./selfforge/lib/review"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -18,9 +18,13 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
 
   composeMemoryContext()
   logObs("plugin_loaded", { version: "1.0.0" }, projectName())
+  try {
+    memoryDecay()
+  } catch {}
 
   const threshold = () => Number(getConfig("review_threshold", "5"))
   const idleCooldown = () => Number(getConfig("idle_cooldown_ms", "300000"))
+  const maintenanceInterval = () => Number(getConfig("maintenance_interval_ms", "3600000"))
   const sessionReviewOnIdle = () => getConfig("session_review_on_idle", "true") !== "false"
 
   // Resolve the review wrapper executable
@@ -46,6 +50,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const messageTexts = new Map<string, string>()
   const messageRoles = new Map<string, string>()
   let lastIdleReview = 0
+  let lastMaintenance = 0
   let reviewInProgress = false
 
   const REVIEW_HEADING = "# Autolearn Review"
@@ -98,10 +103,11 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
             if (!msgId || !role) break
             messageRoles.set(msgId, role)
             const text = messageTexts.get(msgId) || ""
-            if (text && role === "assistant") {
+if (text && role === "assistant") {
               const sid = (info.sessionID as string) || (info.sessionId as string) || ""
               if (!sid) break
               const s = getSession(sid)
+              if (isTrivial(text)) break
               const buf = bufferPush(s, {
                 role: "assistant",
                 content: redact(truncate(text, 2000)),
@@ -114,6 +120,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
               const sid = (info.sessionID as string) || (info.sessionId as string) || ""
               if (!sid) break
               const s = getSession(sid)
+              if (isTrivial(text)) break
               const buf = bufferPush(s, {
                 role: "user",
                 content: redact(truncate(text, 1000)),
@@ -146,6 +153,13 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
             const sid = (props.sessionID as string) || (props.sessionId as string) || ""
             if (!sid) break
             const nowMs = Date.now()
+            // housekeeping: decay stale memories periodically
+            try {
+              if (nowMs - lastMaintenance >= maintenanceInterval()) {
+                memoryDecay()
+                lastMaintenance = nowMs
+              }
+            } catch {}
             if (
               sessionReviewOnIdle() &&
               nowMs - lastIdleReview >= idleCooldown()
@@ -176,7 +190,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
       } catch {}
     },
 
-    "experimental.chat.system.transform": async (input: any, output: { system: string[] }) => {
+"experimental.chat.system.transform": async (input: any, output: { system: string[] }) => {
       try {
         const advisories: string[] = []
         const ga = goalAdvisory()
@@ -185,7 +199,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
         if (ea) advisories.push(`## Evolution Candidates\n${ea}`)
         if (advisories.length > 0) {
           output.system.push(
-            `\n\n<!-- unified-evolver advisory -->\n${advisories.join("\n\n")}\n\nNote: these are auto-generated. Take action with the provided evolve_* tools only when appropriate; most sessions need no action.`
+            `\n\n<!-- selfforge advisory -->\n${advisories.join("\n\n")}\n\nThese are auto-generated signals. Context they describe is authoritative for this session's prior decisions; act on evolution candidates only when relevant. Most sessions need no action.`
           )
         }
       } catch {}
@@ -207,9 +221,10 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
         source: tool.schema.string().optional().describe("Origin: review, manual, migration"),
       },
       async execute(args, ctx) {
-        const res = memoryAdd(args.content, { source: args.source, project: ctx.directory })
+        const res = memoryAddDedup(args.content, { source: args.source, project: ctx.directory })
         logObs("memory_add", res, ctx.directory)
-        return { output: `Memory recorded (id ${res.id}, tier ${res.tier}).` }
+        const mergedNote = res.merged ? " (merged into existing memory)" : ""
+        return { output: `Memory recorded (id ${res.id}, tier ${res.tier})${mergedNote}.` }
       },
     }),
 
@@ -257,12 +272,30 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
       },
     }),
 
-    memory_status: tool({
+memory_status: tool({
       description: "Show memory tier distribution and composed context preview.",
       args: {},
       async execute() {
         const summary = memorySummary()
         return { output: JSON.stringify(summary) }
+      },
+    }),
+
+    memory_search: tool({
+      description:
+        "Surgically recall the most relevant memories for a query topic (keyword-scored). Use instead of dumping all memories.",
+      args: {
+        query: tool.schema.string().describe("Topic/keywords to recall against"),
+        limit: tool.schema.number().optional().describe("Max matches (default 5)"),
+      },
+      async execute(args) {
+        const rows = memoryRecall(args.query, { limit: args.limit })
+        if (rows.length === 0) return { output: "No relevant memories found." }
+        return {
+          output: rows
+            .map((m) => `[${m.id}] (${m.tier}/${m.strength}) ${m.content}`)
+            .join("\n"),
+        }
       },
     }),
 
@@ -509,11 +542,29 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
       },
     }),
 
-    curator_status: tool({
+curator_status: tool({
       description: "Show curator status: skill counts by lifecycle status and last run time.",
       args: {},
       async execute() {
         return { output: JSON.stringify(curatorStatus(), null, 2) }
+      },
+    }),
+
+    session_search: tool({
+      description:
+        "Full-text search across past conversation history (SQLite FTS5). Remembering decisions, solutions, or discussions from earlier sessions. Returns matching message snippets.",
+      args: {
+        query: tool.schema.string().describe("Search phrase"),
+        limit: tool.schema.number().optional().describe("Max results (default 8)"),
+      },
+      async execute(args) {
+        const hits = sessionSearch(args.query, { limit: args.limit })
+        if (hits.length === 0) return { output: "No matching sessions found." }
+        return {
+          output: hits
+            .map((h) => `[${h.session_id}] ${h.role} (${h.created_at}): ${h.content}`)
+            .join("\n"),
+        }
       },
     }),
   }

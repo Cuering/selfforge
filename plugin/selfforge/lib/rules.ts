@@ -37,7 +37,7 @@ export function ruleObserve(opts: {
   const domain = opts.domain && DOMAINS.includes(opts.domain) ? opts.domain : "unknown"
   const scope = opts.explicitScope ?? "local"
   const existing = db
-    .query("SELECT * FROM rules WHERE rule = ? AND project = ?")
+    .query("SELECT * FROM rules WHERE rule = ? AND project IS ?")
     .get(opts.rule, opts.project ?? null) as Rule | undefined
   const ts = now()
   let rule: Rule

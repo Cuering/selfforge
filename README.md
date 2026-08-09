@@ -19,6 +19,14 @@ Everything is stored in a single SQLite database at `~/.evolve/unified.db` (or `
 
 ## Install
 
+One command (downloads + installs):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Cuering/selfforge/main/install-remote.sh | bash
+```
+
+Manual (from a local clone):
+
 ```bash
 git clone https://github.com/Cuering/selfforge.git
 bash selfforge/install.sh
@@ -53,32 +61,34 @@ Manual install:
 }
 ```
 
-3. Restart opencode. The plugin creates `~/.evolve/unlearn.db` and `~/.evolve/memory.context.md` on first load.
+3. Restart opencode. The plugin creates `~/.evolve/unified.db` and `~/.evolve/memory.context.md` on first load.
 
 ## Tools
 
 | Group | Tools |
 | --- | --- |
-| Memory | `memory_add`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status` |
+| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status` |
 | User profile | `user_add`, `user_list`, `user_remove` |
 | Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage` |
 | Rules | `rule_observe`, `rule_status`, `rule_escalate` |
 | Goals | `goal_start`, `goal_status`, `goal_checkpoint`, `goal_complete`, `goal_stop` |
 | Evolution | `evolution_status`, `evolution_propose`, `evolution_apply`, `evolution_reject` |
+| Session recall | `session_search` (FTS5 full-text search over all past conversations) |
 | Curator | `curator_run`, `curator_status` |
 
 ## Architecture
 
 ```
-~/.evolve/unlearn.db                single SQLite store
-  ├── memories / user_profile       memory + preferences
+~/.evolve/unified.db                single SQLite store
+  ├── memories / user_profile       memory + preferences (tiered: hot/warm/cold)
+  ├── session_messages + FTS5       full-text index of all conversation history
   ├── skills                        distilled skills (mirrored to ~/.agents/skills/)
   ├── rules                         behavioral rules for AGENTS.md escalation
   ├── goals + checkpoints           PDCA goal tracking
   └── evolution                     GEPA-style candidates (human-gated apply)
 
 opencode plugin (selfforge.ts)
-  ├── session hooks                 turn counting, buffering, secret redaction
+  ├── session hooks                 turn counting, buffering, secret redaction, social-closer filter
   ├── tool.execute.after            skill usage tracking
   └── chat.system.transform         advisory injection (active goals, evolution candidates)
 ```
@@ -86,9 +96,12 @@ opencode plugin (selfforge.ts)
 ## Design principles
 
 - **One engine, one store.** All self-improvement data lives under `~/.evolve/`.
+- **Ground Truth hierarchy.** Injected memory is authoritative over assumptions; the agent must use injected context instead of re-running discovery tools.
+- **Surgical recall.** `memory_search` returns keyword-scored matches on demand rather than dumping the store.
 - **Data ⇒ evolution.** Optimization candidates are only suggested after a skill shows `use ≥ 2 AND fail ≥ 1`.
 - **Human-gated.** Skill rewrites and AGENTS.md writes require explicit approval.
 - **Declining is valid.** Most sessions produce nothing worth capturing.
+- **Hygiene.** Trivial messages are filtered before buffering; memories decay with age and near-duplicates merge.
 
 ## Privacy
 
