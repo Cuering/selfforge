@@ -39,6 +39,8 @@ Usage:
   selfforge export <file.json>    Write a portable snapshot
   selfforge import <file.json>    Merge a snapshot (per-uuid LWW)
   selfforge serve --port <n>      Run a local JSON-RPC endpoint
+  selfforge team init <dir>       Init a team repo (optionally --remote <url>)
+  selfforge team sync [<dir>]     Pull, merge, re-export, push
 
 Options:
   --home <dir>   Override EVOLVE_HOME (default ~/.config/opencode)
@@ -94,6 +96,23 @@ async function main() {
       } else {
         const res = importSnapshot(snap)
         console.log(JSON.stringify({ merged: res }, null, 2))
+      }
+      break
+    }
+    case "team": {
+      const sub2 = args[0]
+      const { teamInit, teamSync, teamStatus } = await import("../plugin/selfforge/lib/sync")
+      if (sub2 === "init") {
+        const dir = args[1]
+        if (!dir) return help()
+        const remote = opt("--remote", "")
+        console.log(JSON.stringify(teamInit(dir, remote ? { remote } : undefined), null, 2))
+      } else if (sub2 === "sync") {
+        const dir = args[1]
+        const res = teamSync(dir ? { repo: dir } : undefined)
+        console.log(JSON.stringify(res, null, 2))
+      } else {
+        console.log(JSON.stringify(teamStatus(), null, 2))
       }
       break
     }

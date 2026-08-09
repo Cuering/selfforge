@@ -16,6 +16,7 @@ import { repairTools } from "./selfforge/lib/tools/repair"
 import { patternTools } from "./selfforge/lib/tools/patterns"
 import { workspaceTools } from "./selfforge/lib/tools/workspace"
 import { transferTools } from "./selfforge/lib/tools/transfer"
+import { teamTools } from "./selfforge/lib/tools/team"
 import { recordSignal } from "./selfforge/lib/repair"
 import { touchWorkspace } from "./selfforge/lib/workspace"
 
@@ -258,6 +259,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...patternTools,
     ...workspaceTools,
     ...transferTools,
+    ...teamTools,
   }
 
   return { ...hooks, tool: tools }
