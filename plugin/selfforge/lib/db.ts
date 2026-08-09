@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS skills (
   status TEXT DEFAULT 'active',
   usage_count INTEGER DEFAULT 0,
   fail_count INTEGER DEFAULT 0,
+  eta REAL DEFAULT 0.5,
+  trials_attempted INTEGER DEFAULT 0,
+  trials_passed INTEGER DEFAULT 0,
   optimized_at TEXT,
   created_at TEXT,
   updated_at TEXT,
@@ -227,6 +230,16 @@ function migrate(d: Database) {
     if (!cols.has(name)) d.exec(`ALTER TABLE memories ADD COLUMN ${name} ${decl}`)
   }
   migrateSyncColumns(d)
+  // v1.5 skill trial lifecycle: Beta(1,1) eta + trial counters.
+  const skillCols = tableCols("skills")
+  const skillAdds: Array<[string, string]> = [
+    ["eta", "REAL DEFAULT 0.5"],
+    ["trials_attempted", "INTEGER DEFAULT 0"],
+    ["trials_passed", "INTEGER DEFAULT 0"],
+  ]
+  for (const [name, decl] of skillAdds) {
+    if (!skillCols.has(name)) d.exec(`ALTER TABLE skills ADD COLUMN ${name} ${decl}`)
+  }
 }
 
 export function getDb(): Database {

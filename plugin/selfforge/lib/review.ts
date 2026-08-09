@@ -228,7 +228,8 @@ export function curatorRun() {
     if (lastUse === 0) continue
     const age = nowMs - lastUse
     if (age > archiveAfter) {
-      db.query("UPDATE skills SET status = 'archived', updated_at = ? WHERE id = ?").run(
+      // lifecycle-aware archive: tombstone set so the removal replicates
+      db.query("UPDATE skills SET status = 'archived', deleted = 1, updated_at = ? WHERE id = ?").run(
         new Date().toISOString(),
         skill.id
       )

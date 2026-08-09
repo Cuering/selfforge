@@ -1,5 +1,5 @@
 import { getDb, now, stamp } from "./db"
-import { Skill, skillList, markSkillOptimized, skillPatch } from "./skills"
+import { Skill, skillList, markSkillOptimized, skillPatch, applySkillReward } from "./skills"
 
 export type Evolution = {
   id: number
@@ -82,6 +82,8 @@ export function evolutionApply(id: number) {
   if (!skill) return { error: "skill not found" }
   skillPatch(skill.name, "body", evo.candidate)
   markSkillOptimized(skill.name)
+  // reward drift: a successfully-applied evolution is a positive signal
+  applySkillReward(skill.name, 1)
   db.query("UPDATE evolution SET status = 'applied', applied_at = ? WHERE id = ?").run(now(), evo.id)
   return { applied: true, id: evo.id, skill: skill.name }
 }

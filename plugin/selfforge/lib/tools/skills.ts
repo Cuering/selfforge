@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { skillCreate, skillPatch, skillArchive, skillList, skillUsage } from "../skills"
+import { skillCreate, skillPatch, skillArchive, skillList, skillUsage, skillStatus, skillFeedback } from "../skills"
 import { logObs } from "../db"
 
 export const skillTools = {
@@ -58,10 +58,33 @@ export const skillTools = {
   }),
 
   skill_usage: tool({
-    description: "Show skill usage telemetry (uses, failures, last used).",
+    description: "Show skill usage telemetry (uses, failures, trial lifecycle: eta/status).",
     args: {},
     async execute() {
       return { output: JSON.stringify(skillUsage(), null, 2) }
+    },
+  }),
+
+  skill_status: tool({
+    description:
+      "Show skill lifecycle status: counts by status, candidate trial cohort, and how many skills are eligible for retrieval (eta >= minEtaForRetrieval).",
+    args: {},
+    async execute() {
+      return { output: JSON.stringify(skillStatus(), null, 2) }
+    },
+  }),
+
+  skill_feedback: tool({
+    description:
+      "Give thumbs feedback on a skill. positive=true raises its reliability eta (used to graduate/rehab); positive=false lowers it (drives toward archive). Applies eta ± 0.1 with rehab/retire transitions.",
+    args: {
+      name: tool.schema.string().describe("Skill name"),
+      positive: tool.schema.boolean().describe("true = good skill, keep promoting; false = bad, push toward archive"),
+    },
+    async execute(args, ctx) {
+      const res = skillFeedback(args.name, args.positive)
+      logObs("skill_feedback", res, ctx.directory)
+      return { output: JSON.stringify(res) }
     },
   }),
 }
