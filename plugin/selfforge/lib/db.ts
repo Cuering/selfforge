@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS memories (
   importance INTEGER DEFAULT 5,
   lifecycle TEXT DEFAULT 'temporary',
   type TEXT DEFAULT 'fact',
-  archived INTEGER DEFAULT 0
+  archived INTEGER DEFAULT 0,
+  scope TEXT,
+  status TEXT DEFAULT 'confirmed',
+  confidence INTEGER DEFAULT 8,
+  expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -160,6 +164,10 @@ function migrate(d: Database) {
     ["importance", "INTEGER DEFAULT 5"],
     ["lifecycle", "TEXT DEFAULT 'temporary'"],
     ["type", "TEXT DEFAULT 'fact'"],
+    ["scope", "TEXT"],
+    ["status", "TEXT DEFAULT 'confirmed'"],
+    ["confidence", "INTEGER DEFAULT 8"],
+    ["expires_at", "TEXT"],
   ]
   for (const [name, decl] of adds) {
     if (!cols.has(name)) d.exec(`ALTER TABLE memories ADD COLUMN ${name} ${decl}`)

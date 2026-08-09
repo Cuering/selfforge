@@ -20,6 +20,10 @@ export type Memory = {
   lifecycle: string
   type: string
   archived: number
+  scope: string | null
+  status: string
+  confidence: number
+  expires_at: string | null
 }
 
 export const MEMORY_TYPES = [
@@ -86,17 +90,52 @@ export function lifecycleLevel(lc: string): number {
   return i === -1 ? 1 : i
 }
 
+/** Reject content that should never enter long-term memory (secrets, config, code snapshots). */
+const BLOCKED_PATTERNS = [
+  /\b(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]+)\b/,
+  /\b(?:password|passwd|secret|api_key|apikey|access_token|auth_token|private_key)\s*[:=]\s*\S+/i,
+]
+export function isBlockedMemoryContent(content: string): { blocked: boolean; reason?: string } {
+  if (!content) return { blocked: false }
+  for (const re of BLOCKED_PATTERNS) {
+    if (re.test(content)) {
+      return { blocked: true, reason: "contains credential/secret-like content" }
+    }
+  }
+  // code snapshots / file dumps are too volatile to store as durable lessons
+  if (/^```[\s\S]*```$/m.test(content) && content.length > 500) {
+    return { blocked: true, reason: "looks like a code/file snapshot rather than a durable lesson" }
+  }
+  return { blocked: false }
+}
+
 export function memoryAdd(
   content: string,
-  opts?: { source?: string; project?: string; importance?: number; type?: MemoryType }
+  opts?: {
+    source?: string
+    project?: string
+    importance?: number
+    type?: MemoryType
+    scope?: string
+    status?: "confirmed" | "candidate"
+    confidence?: number
+    expires_at?: string
+  }
 ) {
   const db = getDb()
   const ts = now()
+  // store-level guard: blocked content must never reach long-term memory
+  const blocked = isBlockedMemoryContent(content)
+  if (blocked.blocked) {
+    return { id: 0, blocked: true, reason: blocked.reason, tier: "", type: "fact", importance: 5, status: "confirmed", confidence: 8 }
+  }
   const importance = Math.max(1, Math.min(10, opts?.importance ?? 5))
   const type = opts?.type && MEMORY_TYPES.includes(opts.type) ? opts.type : "fact"
+  const status = opts?.status === "candidate" ? "candidate" : "confirmed"
+  const confidence = Math.max(1, Math.min(10, opts?.confidence ?? (status === "candidate" ? 4 : 8)))
   const info = db
     .query(
-      "INSERT INTO memories (content, source, project, strength, tier, importance, lifecycle, type, created_at, updated_at, last_reinforced_at, last_accessed_at, access_count, archived) VALUES (?, ?, ?, ?, ?, ?, 'temporary', ?, ?, ?, ?, ?, 0, 0)"
+      "INSERT INTO memories (content, source, project, strength, tier, importance, lifecycle, type, scope, status, confidence, expires_at, created_at, updated_at, last_reinforced_at, last_accessed_at, access_count, archived) VALUES (?, ?, ?, ?, ?, ?, 'temporary', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)"
     )
     .run(
       content,
@@ -106,21 +145,39 @@ export function memoryAdd(
       computeTier(1),
       importance,
       type,
+      opts?.scope ?? null,
+      status,
+      confidence,
+      opts?.expires_at ?? null,
       ts,
       ts,
       ts,
       ts
     )
-  return { id: Number(info.lastInsertRowid), content, tier: computeTier(1), type, importance }
+  return { id: Number(info.lastInsertRowid), content, tier: computeTier(1), type, importance, status, confidence }
 }
 
-export function memoryList(opts?: { archived?: boolean; tier?: string; limit?: number }): Memory[] {
+export function memoryList(opts?: {
+  archived?: boolean
+  tier?: string
+  status?: string
+  scope?: string
+  limit?: number
+}): Memory[] {
   const where: string[] = []
   const params: unknown[] = []
   if (!opts?.archived) where.push("archived = 0")
   if (opts?.tier) {
     where.push("tier = ?")
     params.push(opts.tier)
+  }
+  if (opts?.status) {
+    where.push("status = ?")
+    params.push(opts.status)
+  }
+  if (opts?.scope) {
+    where.push("(scope IS NULL OR scope = ?)")
+    params.push(opts.scope)
   }
   const sql = `SELECT * FROM memories ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY strength DESC, last_reinforced_at DESC LIMIT ?`
   params.push(opts?.limit ?? 50)
@@ -224,6 +281,33 @@ export function memoryBrief(): {
 
 const DAY_MS = 86400000
 
+/** List unconfirmed candidate memories (auto-inferred, awaiting human confirmation). */
+export function memoryCandidates(limit: number = 20): Memory[] {
+  return memoryList({ status: "candidate", limit })
+}
+
+/** Promote a candidate memory to confirmed (and mark it verified now). */
+export function memoryConfirm(id: number): { ok: boolean; message: string } {
+  const db = getDb()
+  const row = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
+  if (!row) return { ok: false, message: `No memory with id ${id}` }
+  if (row.archived) return { ok: false, message: `Memory ${id} is archived` }
+  db.query("UPDATE memories SET status = 'confirmed', confidence = MAX(confidence, 8), updated_at = ? WHERE id = ?").run(
+    now(),
+    id
+  )
+  return { ok: true, message: `Memory ${id} confirmed` }
+}
+
+/** Reject a candidate: archive it (no longer recallable). */
+export function memoryReject(id: number): { ok: boolean; message: string } {
+  const db = getDb()
+  const row = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
+  if (!row) return { ok: false, message: `No memory with id ${id}` }
+  db.query("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(now(), id)
+  return { ok: true, message: `Memory ${id} rejected and archived` }
+}
+
 /**
  * Adaptive exponential decay + lifecycle management.
  * - Strength decays with a half-life that adapts to access frequency, importance and recency.
@@ -242,6 +326,12 @@ export function memoryDecay(opts?: { archiveDays?: number; demoteDays?: number }
   let demoted = 0
   const ts = now()
   for (const r of rows) {
+    // expiry: expires_at passed -> archive regardless of strength
+    if (r.expires_at && new Date(r.expires_at).getTime() <= nowMs) {
+      db.query("UPDATE memories SET archived = 1, updated_at = ? WHERE id = ?").run(ts, r.id)
+      archived++
+      continue
+    }
     const last = r.last_reinforced_at || r.last_accessed_at
     const ref = last ? new Date(last).getTime() : nowMs
     const ageDays = (nowMs - ref) / DAY_MS
@@ -289,7 +379,16 @@ function similarity(a: string, b: string): number {
 /** Dedup-aware add: strengthen the best near-duplicate (sim >= 0.7) instead of inserting. */
 export function memoryAddDedup(
   content: string,
-  opts?: { source?: string; project?: string; importance?: number; type?: MemoryType }
+  opts?: {
+    source?: string
+    project?: string
+    importance?: number
+    type?: MemoryType
+    scope?: string
+    status?: "confirmed" | "candidate"
+    confidence?: number
+    expires_at?: string
+  }
 ) {
   const rows = getDb().query("SELECT * FROM memories WHERE archived = 0").all() as Memory[]
   let best: Memory | undefined
@@ -306,11 +405,24 @@ export function memoryAddDedup(
     const newStrength = best.strength + 1
     const access = (best.access_count ?? 0) + 1
     const lifecycle = nextLifecycle(best.lifecycle ?? "temporary", access).lifecycle
+    // explicit/add dedup merges count as a confirmation: promote candidate -> confirmed
+    const status = opts?.status === "candidate" ? best.status ?? "confirmed" : "confirmed"
     getDb()
       .query(
-        "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
+        "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, status = ?, confidence = MAX(confidence, ?), updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
       )
-      .run(newStrength, computeTier(newStrength), access, lifecycle, ts, ts, ts, best.id)
+      .run(
+        newStrength,
+        computeTier(newStrength),
+        access,
+        lifecycle,
+        status,
+        opts?.confidence ?? 8,
+        ts,
+        ts,
+        ts,
+        best.id
+      )
     return {
       merged: true,
       id: best.id,
@@ -318,13 +430,14 @@ export function memoryAddDedup(
       tier: computeTier(newStrength),
       lifecycle,
       type: best.type ?? "fact",
+      status,
     }
   }
   return { merged: false, ...memoryAdd(content, opts) }
 }
 
 const GROUND_TRUTH =
-  "> **Authority (Ground Truth):** The injected memory below is authoritative for documented knowledge and prior decisions. When it contradicts assumptions, memory wins. Never treat a question as novel when the answer is already here, and do not re-run search/review tools to rediscover what this context already provides.\n\n"
+  "> **Authority (Ground Truth):** The injected memory below is authoritative for documented knowledge and prior decisions. It is a clue, never a substitute for current facts: when it contradicts the current repository state, build scripts, test results or the user's explicit instruction, the current facts win and the conflict should be noted as a stale memory. Never treat a question as novel when the answer is already here, and do not re-run search/review tools to rediscover what this context already provides.\n\n"
 
 function tokenize(text: string): Set<string> {
   return new Set(
@@ -340,14 +453,21 @@ function tokenize(text: string): Set<string> {
  * overlap (token intersection, weighted by strength). Used for surgical
  * injection rather than dumping the whole store. Threshold-guarded.
  */
-export function memoryRecall(query: string, opts?: { minScore?: number; limit?: number }): Memory[] {
+export function memoryRecall(
+  query: string,
+  opts?: { minScore?: number; limit?: number; scope?: string }
+): Memory[] {
   const minScore = opts?.minScore ?? 2
   const limit = opts?.limit ?? 5
   if (!query || query.trim().length < 2) return []
   const q = tokenize(query)
-  const rows = memoryList({ limit: 500 })
+  const nowMs = Date.now()
+  const rows = memoryList({ limit: 500, scope: opts?.scope })
   const scored: Array<{ m: Memory; score: number }> = []
   for (const m of rows) {
+    // only confirmed, unexpired memories are recallable (candidates stay out of context)
+    if (m.status === "candidate") continue
+    if (m.expires_at && new Date(m.expires_at).getTime() <= nowMs) continue
     const mt = tokenize(m.content)
     if (mt.size === 0) continue
     let hits = 0
@@ -371,7 +491,8 @@ export function memoryRecall(query: string, opts?: { minScore?: number; limit?: 
 }
 
 export function composeMemoryContext(): string {
-  const memories = memoryList({ limit: 30 })
+  // confirmed only — candidates never reach the injected context
+  const memories = memoryList({ limit: 30, status: "confirmed" })
   const profile = getDb()
     .query("SELECT keyword, content FROM user_profile ORDER BY created_at DESC LIMIT 20")
     .all() as { keyword: string; content: string }[]
@@ -390,7 +511,9 @@ export function composeMemoryContext(): string {
   md += "## Persistent Lessons\n\n"
   for (const m of memories) {
     const lc = m.lifecycle && m.lifecycle !== "temporary" ? ` ${m.lifecycle}` : ""
-    md += `- [${m.tier}/${m.strength}${lc}] ${m.content}\n`
+    const sc = m.scope ? ` (scope:${m.scope})` : ""
+    const vt = m.last_reinforced_at ? ` verified:${m.last_reinforced_at.slice(0, 10)}` : ""
+    md += `- [${m.tier}/${m.strength}${lc}${sc}${vt}] ${m.content}\n`
   }
   writeFileSync(CONTEXT_FILE, md)
   return md

@@ -31,17 +31,21 @@ Stop conditions:
 
 After user corrections, preferences, or successful workarounds:
 
-- `memory_add` — general rules and durable lessons (not one-off details); near-duplicates merge automatically
+- `memory_add` — general rules and durable lessons (not one-off details); near-duplicates merge automatically. Explicit user statements ("remember this") write directly as confirmed; auto-inferred lessons should be `status: candidate`.
+- `memory_candidates` / `memory_confirm` / `memory_reject` — review the candidate zone (auto-inferred lessons) and confirm only what will change future behavior.
+- Add a path-glob `scope` when a lesson belongs to a specific module (e.g. `services/payment/**`) so it never leaks across modules.
 - `user_add` — communication/workflow preferences
 - `rule_observe` — behavioral rules for AGENTS.md escalation (use explicitScope=global only when user said "always"/"everywhere")
 - `skill_create` / `skill_patch` — distill a reusable technique into a skill
+
+Memory contract: only confirmed, unexpired memories are recalled or injected. Credentials, tokens, code snapshots and unverified guesses are never stored. Injected memory is authoritative over assumptions but never overrides current repo/CI/test facts — if it conflicts, the current fact wins and the memory is stale (weaken/archive it). See `docs/MEMORY_CONTRACT.md`.
 
 Recalling prior context:
 
 - `memory_search` with a topic to surgically recall relevant lessons instead of listing everything
 - `session_search` for full-text search over past conversations (decisions, solutions, discussions)
 
-Ground Truth rule: when memory is injected into the context, treat it as authoritative. Never treat a question as novel when the answer is already in the prompt, and do not re-run discovery tools to rediscover what injected context already provides.
+Ground Truth rule: when memory is injected into the context, treat it as authoritative for documented knowledge and prior decisions — but it is a clue, never a substitute for current facts. If it contradicts the current repository state, build scripts, test results or an explicit user instruction, the current facts win and the conflict should be recorded as a stale memory. Do not re-run discovery tools to rediscover what injected context already provides.
 
 Prioritize patching an existing skill or umbrella skill over creating a narrow new one. Anti-patterns: one-off narratives, environment-specific workarounds, negative tool claims ("tool X doesn't work").
 

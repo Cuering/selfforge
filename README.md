@@ -67,7 +67,7 @@ Manual install:
 
 | Group | Tools |
 | --- | --- |
-| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief` |
+| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief`, `memory_candidates`, `memory_confirm`, `memory_reject` |
 | User profile | `user_add`, `user_list`, `user_remove` |
 | Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage` |
 | Rules | `rule_observe`, `rule_status`, `rule_escalate` |
@@ -98,7 +98,7 @@ Memory tiers and lifecycle: each memory is ranked into hot/warm/cold/evictable b
 ## Design principles
 
 - **One engine, one store.** All self-improvement data lives under `~/.evolve/`.
-- **Ground Truth hierarchy.** Injected memory is authoritative over assumptions; the agent must use injected context instead of re-running discovery tools.
+- **Ground Truth hierarchy.** Injected memory is authoritative over assumptions, but never overrides current facts: repo state, build scripts, test results and explicit instructions win, and conflicts surface as stale memories. See [docs/MEMORY_CONTRACT.md](docs/MEMORY_CONTRACT.md).
 - **Surgical recall.** `memory_search` returns keyword-scored matches on demand rather than dumping the store.
 - **Data ⇒ evolution.** Optimization candidates are only suggested after a skill shows `use ≥ 2 AND fail ≥ 1`.
 - **Human-gated.** Skill rewrites and AGENTS.md writes require explicit approval.
@@ -114,6 +114,17 @@ All data is stored locally under `~/.evolve/`. Nothing leaves your machine. No o
 MIT
 
 ## Version history
+
+### v1.3.0 (2026-08-09) Memory contract & contamination defense
+
+- **Candidate zone:** auto-inferred memories land as `candidate`; they are never recalled or injected until a human confirms them (`memory_candidates`, `memory_confirm`, `memory_reject`). Explicit user statements write directly as confirmed.
+- **Scope:** memories carry an optional path-glob `scope` so a lesson in one module never leaks into another module's recall.
+- **Confidence & TTL:** `confidence` 1–10 plus `expires_at` for temporary facts — expired memories are excluded from recall and archived by decay.
+- **Store-level write guard:** credentials, tokens and code/file snapshots are rejected at write time.
+- **Priority clarified:** injected memory is authoritative over assumptions but never overrides current repo/CI/test facts; conflicts surface as stale memories.
+- **Memory contract:** documented operating rules in `docs/MEMORY_CONTRACT.md`.
+- **Memory trace:** every recall records query/scope/recalled ids/injected criteria in `observations` for reconstructable debugging.
+- **Contamination regression suite:** `tests/memory-fixtures.test.ts` (7 high-risk fixtures: secrets, candidates, expiry, scope leakage, injection purity, dedup promotion).
 
 ### v1.2.0 (2026-08-09) Memory lifecycle management
 

@@ -67,7 +67,7 @@ bash selfforge/install.sh
 
 |分组|工具|
 |---|---|
-|记忆|`memory_add`、`memory_search`、`memory_list`、`memory_strengthen`、`memory_weaken`、`memory_remove`、`memory_status`、`memory_brief`|
+|记忆|`memory_add`、`memory_search`、`memory_list`、`memory_strengthen`、`memory_weaken`、`memory_remove`、`memory_status`、`memory_brief`、`memory_candidates`、`memory_confirm`、`memory_reject`|
 |用户画像|`user_add`、`user_list`、`user_remove`|
 |技能|`skill_create`、`skill_patch`、`skill_list`、`skill_archive`、`skill_usage`|
 |规则|`rule_observe`、`rule_status`、`rule_escalate`|
@@ -98,7 +98,7 @@ opencode插件（selfforge.ts）
 ## 设计原则
 
 - **单一引擎、单一存储。**所有自改进数据都在`~/.evolve/`下。
-- **事实层级。**注入的记忆优先于猜测；智能体必须使用注入上下文，而不是重新跑发现工具。
+- **事实层级。**注入的记忆优先于猜测，但绝不压过当前事实：仓库现状、构建脚本、测试结果与显式指令为准，冲突被标记为陈旧记忆。详见[docs/MEMORY_CONTRACT.md](docs/MEMORY_CONTRACT.md)。
 - **外科手术式召回。**`memory_search`按关键词打分按需返回，而不是倾倒整个存储。
 - **数据驱动进化。**只有在技能满足`use≥2且fail≥1`后才给出优化候选。
 - **人工把关。**技能改写与AGENTS.md写入都需要显式批准。
@@ -110,6 +110,17 @@ opencode插件（selfforge.ts）
 所有数据都保存在本机`~/.evolve/`下，不离开你的机器，没有任何外发请求。
 
 ## 版本更新说明
+
+### v1.3.0（2026-08-09）记忆契约与防污染
+
+- 候选区：自动推断的记忆以`candidate`状态入库，未经人工确认（`memory_candidates`/`memory_confirm`/`memory_reject`）绝不召回或注入；用户显式陈述直接以confirmed写入。
+- 作用域：记忆可带路径glob作用域`scope`（如`services/payment/**`），防止某模块的经验泄漏进其他模块的召回。
+- 置信度与TTL：新增`confidence`（1–10）与`expires_at`，临时事实过期即被召回排除并归档。
+- 写入守门：凭据、令牌与代码/文件快照在写入时被拒绝。
+- 优先级明确：注入记忆优先于猜测但绝不压过当前仓库/CI/测试事实，冲突被标记为陈旧记忆。
+- 记忆契约：操作规则文档化于`docs/MEMORY_CONTRACT.md`。
+- 记忆轨迹：每次召回记录查询/作用域/召回id/注入准则到`observations`，可复现排障。
+- 污染回归测试：`tests/memory-fixtures.test.ts`共7个高风险样例（凭据、候选、过期、跨模块泄漏、注入纯净、去重转正）。
 
 ### v1.2.0（2026-08-09）记忆生命周期管理
 
