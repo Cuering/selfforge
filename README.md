@@ -67,7 +67,7 @@ Manual install:
 
 | Group | Tools |
 | --- | --- |
-| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status` |
+| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief` |
 | User profile | `user_add`, `user_list`, `user_remove` |
 | Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage` |
 | Rules | `rule_observe`, `rule_status`, `rule_escalate` |
@@ -93,6 +93,8 @@ opencode plugin (selfforge.ts)
   └── chat.system.transform         advisory injection (active goals, evolution candidates)
 ```
 
+Memory tiers and lifecycle: each memory is ranked into hot/warm/cold/evictable by `strength`, and passes through a temporary → active → permanent → archived lifecycle with promotion and demotion. Strength decays exponentially with an adaptive half-life (tuned by access frequency, importance and recency); inactive memories demote a lifecycle level, stale ones are archived, and near-duplicates merge. `memory_search` also injects recent evolution criteria as authoritative behavior guidance for short (≤ 15 char) queries.
+
 ## Design principles
 
 - **One engine, one store.** All self-improvement data lives under `~/.evolve/`.
@@ -110,3 +112,29 @@ All data is stored locally under `~/.evolve/`. Nothing leaves your machine. No o
 ## License
 
 MIT
+
+## Version history
+
+### v1.2.0 (2026-08-09) Memory lifecycle management
+
+- **Schema migration:** `memories` gains `last_accessed_at`, `access_count`, `importance`, `lifecycle`, `type`; legacy DBs are upgraded idempotently via `PRAGMA table_info` probing.
+- **Adaptive exponential decay:** strength decays by a half-life formula; the half-life adapts to access frequency, importance and recency. Stale memories demote a lifecycle level; long-inactive ones are archived.
+- **Lifecycle promotion/demotion:** temporary → active → permanent by access count (15/30); manual weakening or inactivity demotes.
+- **Memory classification:** `memory_add` accepts `type` (preference/insight/instruction/fact/decision/episodic) and `importance` (1–10).
+- **Daily brief:** new `memory_brief` tool reporting active/archived counts, today's additions, type & lifecycle distribution and health suggestions.
+- **Short-query injection:** `memory_search` auto-injects recently applied evolution criteria as authoritative behavior guidance for queries ≤ 15 chars.
+- **VACUUM maintenance:** low-frequency DB compaction folded into the idle maintenance loop (default daily, configurable).
+
+### v1.1.0 (2026-08-09) Recall & session search
+
+- Ground Truth hierarchy: injected memory is authoritative, so the agent uses it instead of re-running discovery.
+- Surgical recall: `memory_search` returns keyword-scored matches on demand.
+- FTS5 session full-text search: new `session_search` across all past conversations.
+- Decay & dedup: memories age-decay; near-duplicates (sim ≥ 0.7) auto-merge and strengthen.
+- New smoke test suite.
+
+### v1.0.0 (2026-08-07) Initial release
+
+- Unified self-evolution engine: conversation review, persistent memory, skill distillation/optimization, behavioral rule escalation, PDCA goal tracking, skill lifecycle curation.
+- Single SQLite store `~/.evolve/unified.db` plus injected context file `~/.evolve/memory.context.md`.
+- One-command install scripts `install.sh` and `install-remote.sh`.
