@@ -15,6 +15,7 @@ import { curatorTools } from "./selfforge/lib/tools/curator"
 import { repairTools } from "./selfforge/lib/tools/repair"
 import { patternTools } from "./selfforge/lib/tools/patterns"
 import { workspaceTools } from "./selfforge/lib/tools/workspace"
+import { transferTools } from "./selfforge/lib/tools/transfer"
 import { recordSignal } from "./selfforge/lib/repair"
 import { touchWorkspace } from "./selfforge/lib/workspace"
 
@@ -26,7 +27,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     (directory || worktree || process.cwd()).split(/[\\/]/).pop() || "unknown"
 
   composeMemoryContext()
-  logObs("plugin_loaded", { version: "1.5.0" }, projectName())
+  logObs("plugin_loaded", { version: "1.6.0" }, projectName())
   try {
     touchWorkspace(directory || worktree || process.cwd())
   } catch {}
@@ -256,6 +257,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...repairTools,
     ...patternTools,
     ...workspaceTools,
+    ...transferTools,
   }
 
   return { ...hooks, tool: tools }

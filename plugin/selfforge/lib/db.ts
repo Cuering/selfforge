@@ -355,6 +355,15 @@ export function tickClock(): number {
   return next
 }
 
+/** Jump the clock to at least `target` (used after importing a peer snapshot). */
+export function advanceClockTo(target: number): number {
+  if (target <= clock()) return clock()
+  _clock = target
+  _clockLoaded = true
+  setConfig("lamport_clock", String(target))
+  return _clock
+}
+
 export type Stamp = {
   uuid: string
   origin: string
