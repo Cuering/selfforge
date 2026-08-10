@@ -111,13 +111,13 @@ opencode插件（selfforge.ts）
 
 ## 设计原则
 
-- **单一引擎、单一存储。**所有自改进数据都在`~/.evolve/`下。
-- **事实层级。**注入的记忆优先于猜测，但绝不压过当前事实：仓库现状、构建脚本、测试结果与显式指令为准，冲突被标记为陈旧记忆。详见[docs/MEMORY_CONTRACT.md](docs/MEMORY_CONTRACT.md)。
-- **外科手术式召回。**`memory_search`按关键词打分按需返回，而不是倾倒整个存储。
-- **数据驱动进化。**只有在技能满足`use≥2且fail≥1`后才给出优化候选。
-- **人工把关。**技能改写与AGENTS.md写入都需要显式批准。
-- **不产出也是有效结果。**大多数会话没有值得沉淀的内容。
-- **卫生。**闲聊消息在缓冲前被过滤；记忆随时间衰减，近似重复自动合并。
+- **单一引擎、单一存储。** 所有自改进数据都在`~/.evolve/`下。
+- **事实层级。** 注入的记忆优先于猜测，但绝不压过当前事实：仓库现状、构建脚本、测试结果与显式指令为准，冲突被标记为陈旧记忆。详见[docs/MEMORY_CONTRACT.md](docs/MEMORY_CONTRACT.md)。
+- **外科手术式召回。** `memory_search`按关键词打分按需返回，而不是倾倒整个存储。
+- **数据驱动进化。** 只有在技能满足`use≥2且fail≥1`后才给出优化候选。
+- **人工把关。** 技能改写与AGENTS.md写入都需要显式批准。
+- **不产出也是有效结果。** 大多数会话没有值得沉淀的内容。
+- **卫生。** 闲聊消息在缓冲前被过滤；记忆随时间衰减，近似重复自动合并。
 
 ## 隐私
 
@@ -127,10 +127,10 @@ opencode插件（selfforge.ts）
 
 四个借鉴自MemOS(`memos-local-plugin`)的能力，全部确定性、零LLM：
 
-- **技能试用生命周期：**每条技能以`candidate`起步，`eta=(passed+1)/(attempted+2)`（Beta(1,1)）。达到试用阈值后按eta晋升`active`或归档；`skill_feedback`（±0.1）支持康复/退役；`evolution_apply`喂入奖励漂移（`0.7η+0.3m`）。
-- **决策修复：**步骤级成败信号（`signals_auto`默认开启）喂入突发检测器（滑动窗口+冷却）。修复突发或分类出的用户偏好（`用X代替Y`/`prefer X over Y`/否定句）会草拟带证据的确定性修复；`repair_accept`/`repair_reject`把关应用。
-- **防幻觉验证：**`skill_verify`对照真实证据（观测到的工具调用、代码围栏命令）检查技能草稿中提到的工具，报告工具覆盖度与证据共鸣度。草稿快速失败，而不是带着虚构工具名上线。
-- **模式签名候选桶：**反复出现的子问题被指纹化为`primaryTag|secondaryTag|tool|errCode`，哈希成16位十六进制桶。只有包含≥N个独立episode（默认2，TTL清除）的桶才归纳成候选记忆——单次偶发episode永远不会铸造知识。
+- **技能试用生命周期：** 每条技能以`candidate`起步，`eta=(passed+1)/(attempted+2)`（Beta(1,1)）。达到试用阈值后按eta晋升`active`或归档；`skill_feedback`（±0.1）支持康复/退役；`evolution_apply`喂入奖励漂移（`0.7η+0.3m`）。
+- **决策修复：** 步骤级成败信号（`signals_auto`默认开启）喂入突发检测器（滑动窗口+冷却）。修复突发或分类出的用户偏好（`用X代替Y`/`prefer X over Y`/否定句）会草拟带证据的确定性修复；`repair_accept`/`repair_reject`把关应用。
+- **防幻觉验证：** `skill_verify`对照真实证据（观测到的工具调用、代码围栏命令）检查技能草稿中提到的工具，报告工具覆盖度与证据共鸣度。草稿快速失败，而不是带着虚构工具名上线。
+- **模式签名候选桶：** 反复出现的子问题被指纹化为`primaryTag|secondaryTag|tool|errCode`，哈希成16位十六进制桶。只有包含≥N个独立episode（默认2，TTL清除）的桶才归纳成候选记忆——单次偶发episode永远不会铸造知识。
 
 ## 工作环境感知（Phase 2）
 
@@ -159,14 +159,14 @@ git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐
 
 ### v1.7.0（2026-08-10）MemOS引擎+跨智能体+团队同步+仪表盘（Phase 1–5）
 
-- **技能试用生命周期（Phase 1）：**技能携带Beta(1,1)的`eta`，以`candidate`起步，按试用阈值（`skill_candidate_trials`默认3）晋升；`evolution_apply`喂入奖励漂移；`skill_feedback`支持康复/退役。工具：`skill_status`、`skill_feedback`。
-- **决策修复（Phase 1）：**步骤级成败信号（`signals_auto`）喂入突发检测器+冷却；分类出的用户偏好与反模式草拟带证据的确定性修复。工具：`repair_run`、`repair_signal`、`feedback_classify`、`repair_status`、`repair_list`、`repair_accept`、`repair_reject`。
-- **防幻觉验证（Phase 1）：**`skill_verify`对照真实观测（工具调用、代码围栏命令）给技能草稿打分工具覆盖度与证据共鸣；`skill_create`附带该建议。
-- **模式签名候选桶（Phase 1）：**复发子问题指纹化为`primaryTag|secondaryTag|tool|errCode`，哈希成16位桶；只有≥N个独立episode（TTL清除）的桶归纳为候选记忆。工具：`pattern_status`、`pattern_record`、`pattern_induce`、`pattern_signature`。
-- **工作环境感知（Phase 2）：**`workspaces`表+栈标记指纹→`ws:`作用域键；`memoryRecall`应用`scopeBoost`。工具：`workspace_status`、`workspace_scan`、`workspace_list`。
-- **跨智能体/平台迁移（Phase 3）：**可移植快照+逐uuid LWW导入；CLI`cli/selfforge.ts`；零依赖本地JSON-RPC。工具：`transfer_export`、`transfer_import`、`transfer_preview`、`transfer_status`。
-- **团队共享记忆（Phase 4）：**git仓库持有`snapshot.json`；`team_sync`=拉取→LWW合并→重新导出→推送。工具：`team_sync`、`team_status`、`team_init`、`team_ping`。
-- **可视化管理（Phase 5）：**`selfforge serve`提供`GET /`单页仪表盘与`/api/*`JSON端点；JSON-RPC保留在`POST /`。
+- **技能试用生命周期（Phase 1）：** 技能携带Beta(1,1)的`eta`，以`candidate`起步，按试用阈值（`skill_candidate_trials`默认3）晋升；`evolution_apply`喂入奖励漂移；`skill_feedback`支持康复/退役。工具：`skill_status`、`skill_feedback`。
+- **决策修复（Phase 1）：** 步骤级成败信号（`signals_auto`）喂入突发检测器+冷却；分类出的用户偏好与反模式草拟带证据的确定性修复。工具：`repair_run`、`repair_signal`、`feedback_classify`、`repair_status`、`repair_list`、`repair_accept`、`repair_reject`。
+- **防幻觉验证（Phase 1）：** `skill_verify`对照真实观测（工具调用、代码围栏命令）给技能草稿打分工具覆盖度与证据共鸣；`skill_create`附带该建议。
+- **模式签名候选桶（Phase 1）：** 复发子问题指纹化为`primaryTag|secondaryTag|tool|errCode`，哈希成16位桶；只有≥N个独立episode（TTL清除）的桶归纳为候选记忆。工具：`pattern_status`、`pattern_record`、`pattern_induce`、`pattern_signature`。
+- **工作环境感知（Phase 2）：** `workspaces`表+栈标记指纹→`ws:`作用域键；`memoryRecall`应用`scopeBoost`。工具：`workspace_status`、`workspace_scan`、`workspace_list`。
+- **跨智能体/平台迁移（Phase 3）：** 可移植快照+逐uuid LWW导入；CLI`cli/selfforge.ts`；零依赖本地JSON-RPC。工具：`transfer_export`、`transfer_import`、`transfer_preview`、`transfer_status`。
+- **团队共享记忆（Phase 4）：** git仓库持有`snapshot.json`；`team_sync`=拉取→LWW合并→重新导出→推送。工具：`team_sync`、`team_status`、`team_init`、`team_ping`。
+- **可视化管理（Phase 5）：** `selfforge serve`提供`GET /`单页仪表盘与`/api/*`JSON端点；JSON-RPC保留在`POST /`。
 - 测试：`skill-lifecycle`、`repair`、`verify`、`patterns`、`workspace`、`transfer`、`rpc`、`team`。
 
 ### v1.5.0（2026-08-09）同步原语（Phase 0）
