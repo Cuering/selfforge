@@ -1,8 +1,8 @@
 # selfforge
 
-面向[OpenCode](https://opencode.ai)的统一自进化引擎。一个插件把四类能力合并进单一存储，用同一套工具驱动。
+面向[OpenCode](https://opencode.ai)的统一自进化引擎。一个插件把多类能力合并进单一存储，用同一套工具驱动。
 
-Selfforge从对话中学习，跟踪目标，管理持久记忆，提炼并优化可复用技能，并把行为规则升级进AGENTS.md——全部通过一个插件和一份SQLite数据库完成。
+Selfforge从对话中学习，跟踪目标，管理持久记忆，提炼并优化可复用技能，把行为规则升级进AGENTS.md，自动修复自己的决策，并在多个智能体、多台机器与团队之间同步知识——全部通过一个插件和一份SQLite数据库完成。
 
 ## 合并了什么
 
@@ -14,6 +14,11 @@ Selfforge从对话中学习，跟踪目标，管理持久记忆，提炼并优�
 |行为规则写入AGENTS.md|self-improving-agent|`rule_*`|
 |目标驱动的PDCA循环|miles990/self-evolving-agent|`goal_*`、检查点CP0–CP6.5|
 |技能生命周期管理|autolearn|`curator_*`|
+|技能试用生命周期+防幻觉验证|MemOS(memos-local-plugin)|`skill_status`、`skill_feedback`、`skill_verify`、`pattern_*`|
+|决策修复(反馈→修复草稿)|MemOS`core/feedback`+`core/decision-repair`|`repair_*`、`feedback_classify`|
+|工作环境感知|MemOS工作区指纹|`workspace_*`、作用域召回|
+|跨智能体/平台迁移|自研|`transfer_*`、`cli/selfforge.ts`、本地JSON-RPC|
+|团队共享记忆|自研(git支撑)|`team_*`|
 
 所有数据存放在同一份SQLite数据库：`~/.evolve/unified.db`（或`$EVOLVE_HOME`）。
 
@@ -69,12 +74,17 @@ bash selfforge/install.sh
 |---|---|
 |记忆|`memory_add`、`memory_search`、`memory_list`、`memory_strengthen`、`memory_weaken`、`memory_remove`、`memory_status`、`memory_brief`、`memory_candidates`、`memory_confirm`、`memory_reject`|
 |用户画像|`user_add`、`user_list`、`user_remove`|
-|技能|`skill_create`、`skill_patch`、`skill_list`、`skill_archive`、`skill_usage`|
+|技能|`skill_create`、`skill_patch`、`skill_list`、`skill_archive`、`skill_usage`、`skill_status`、`skill_feedback`、`skill_verify`|
 |规则|`rule_observe`、`rule_status`、`rule_escalate`|
 |目标|`goal_start`、`goal_status`、`goal_checkpoint`、`goal_complete`、`goal_stop`|
 |进化|`evolution_status`、`evolution_propose`、`evolution_apply`、`evolution_reject`|
 |会话召回|`session_search`（对全部历史对话的FTS5全文检索）|
 |管理|`curator_run`、`curator_status`|
+|决策修复|`repair_run`、`repair_signal`、`feedback_classify`、`repair_status`、`repair_list`、`repair_accept`、`repair_reject`|
+|模式候选|`pattern_status`、`pattern_record`、`pattern_induce`、`pattern_signature`|
+|工作区|`workspace_status`、`workspace_scan`、`workspace_list`|
+|迁移|`transfer_export`、`transfer_import`、`transfer_preview`、`transfer_status`|
+|团队同步|`team_sync`、`team_status`、`team_init`、`team_ping`|
 
 ## 架构
 
@@ -85,11 +95,15 @@ bash selfforge/install.sh
   ├── skills                        提炼的技能（镜像到~/.agents/skills/）
   ├── rules                         行为规则（升级进AGENTS.md）
   ├── goals + checkpoints           PDCA目标跟踪
-  └── evolution                     GEPA式候选（人工把关后应用）
+  ├── evolution                     GEPA式候选（人工把关后应用）
+  ├── signals / repairs             决策修复：步骤成败信号+修复草稿
+  ├── pattern_signatures            零LLM复发桶（episode阈值→记忆）
+  ├── workspaces                    环境指纹+ws:作用域记忆
+  └── config                        node_id+Lamport时钟（行级同步身份）
 
 opencode插件（selfforge.ts）
   ├── 会话钩子                       轮次计数、缓冲、敏感信息打码、闲聊过滤
-  ├── tool.execute.after            技能使用跟踪
+  ├── tool.execute.after            技能使用跟踪+成败信号
   └── chat.system.transform         建议注入（进行中的目标、进化候选）
 ```
 
@@ -109,7 +123,59 @@ opencode插件（selfforge.ts）
 
 所有数据都保存在本机`~/.evolve/`下，不离开你的机器，没有任何外发请求。
 
+## MemOS风格引擎（Phase 1）
+
+四个借鉴自MemOS(`memos-local-plugin`)的能力，全部确定性、零LLM：
+
+- **技能试用生命周期：**每条技能以`candidate`起步，`eta=(passed+1)/(attempted+2)`（Beta(1,1)）。达到试用阈值后按eta晋升`active`或归档；`skill_feedback`（±0.1）支持康复/退役；`evolution_apply`喂入奖励漂移（`0.7η+0.3m`）。
+- **决策修复：**步骤级成败信号（`signals_auto`默认开启）喂入突发检测器（滑动窗口+冷却）。修复突发或分类出的用户偏好（`用X代替Y`/`prefer X over Y`/否定句）会草拟带证据的确定性修复；`repair_accept`/`repair_reject`把关应用。
+- **防幻觉验证：**`skill_verify`对照真实证据（观测到的工具调用、代码围栏命令）检查技能草稿中提到的工具，报告工具覆盖度与证据共鸣度。草稿快速失败，而不是带着虚构工具名上线。
+- **模式签名候选桶：**反复出现的子问题被指纹化为`primaryTag|secondaryTag|tool|errCode`，哈希成16位十六进制桶。只有包含≥N个独立episode（默认2，TTL清除）的桶才归纳成候选记忆——单次偶发episode永远不会铸造知识。
+
+## 工作环境感知（Phase 2）
+
+工作区通过廉价栈标记（`package.json`、`pyproject.toml`、`go.mod`、`Dockerfile`…）指纹化为稳定的`ws:<目录名>:<哈希>`作用域键。记忆可绑定该键，`memoryRecall`应用`scopeBoost`让当前工作区的经验排在最前——完全不需要嵌入向量。
+
+## 跨智能体/平台迁移（Phase 3）
+
+可移植快照把整个存储序列化（`format: selfforge-snapshot`），携带逐行身份。`transfer_export`/`transfer_import`在机器、智能体、平台间搬运；导入是逐uuid的last-write-wins合并（`updated_at`新者胜，平局按node_id，墓碑删除）。零依赖引擎（`lib/index.ts`）同时支撑：
+
+- `cli/selfforge.ts`——`status`、`export`、`import`（支持`--dry-run`）、`serve`、`team`子命令；只要有bun就能跑，不需要OpenCode。
+- 本地JSON-RPC服务（`lib/rpc.ts`）——`ping`、`status`、`memory.list`、`skills.list`、`workspaces.list`、`goals.list`、`snapshot.export`/`snapshot.import`走HTTP。
+
+## 团队共享记忆（Phase 4）
+
+git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐uuid LWW合并进本地库→重新导出→提交→推送，任意数量的节点最终收敛。`team_init`引导建仓（可选加remote）；墓碑以删除形式传播。
+
+## 可视化管理（Phase 5）
+
+`selfforge serve`（或`bun cli/selfforge.ts serve`）启动零依赖HTTP服务：
+
+- `GET /`——单页仪表盘（概览计数、记忆、技能、目标、待处理修复、模式候选）。
+- `GET /api/*`——JSON端点（`/api/dashboard`、`/api/memories`、`/api/skills`、`/api/goals`、`/api/repairs`、`/api/patterns`、`/api/workspaces`）。
+- `POST /`——上述JSON-RPC接口。
+
 ## 版本更新说明
+
+### v1.7.0（2026-08-10）MemOS引擎+跨智能体+团队同步+仪表盘（Phase 1–5）
+
+- **技能试用生命周期（Phase 1）：**技能携带Beta(1,1)的`eta`，以`candidate`起步，按试用阈值（`skill_candidate_trials`默认3）晋升；`evolution_apply`喂入奖励漂移；`skill_feedback`支持康复/退役。工具：`skill_status`、`skill_feedback`。
+- **决策修复（Phase 1）：**步骤级成败信号（`signals_auto`）喂入突发检测器+冷却；分类出的用户偏好与反模式草拟带证据的确定性修复。工具：`repair_run`、`repair_signal`、`feedback_classify`、`repair_status`、`repair_list`、`repair_accept`、`repair_reject`。
+- **防幻觉验证（Phase 1）：**`skill_verify`对照真实观测（工具调用、代码围栏命令）给技能草稿打分工具覆盖度与证据共鸣；`skill_create`附带该建议。
+- **模式签名候选桶（Phase 1）：**复发子问题指纹化为`primaryTag|secondaryTag|tool|errCode`，哈希成16位桶；只有≥N个独立episode（TTL清除）的桶归纳为候选记忆。工具：`pattern_status`、`pattern_record`、`pattern_induce`、`pattern_signature`。
+- **工作环境感知（Phase 2）：**`workspaces`表+栈标记指纹→`ws:`作用域键；`memoryRecall`应用`scopeBoost`。工具：`workspace_status`、`workspace_scan`、`workspace_list`。
+- **跨智能体/平台迁移（Phase 3）：**可移植快照+逐uuid LWW导入；CLI`cli/selfforge.ts`；零依赖本地JSON-RPC。工具：`transfer_export`、`transfer_import`、`transfer_preview`、`transfer_status`。
+- **团队共享记忆（Phase 4）：**git仓库持有`snapshot.json`；`team_sync`=拉取→LWW合并→重新导出→推送。工具：`team_sync`、`team_status`、`team_init`、`team_ping`。
+- **可视化管理（Phase 5）：**`selfforge serve`提供`GET /`单页仪表盘与`/api/*`JSON端点；JSON-RPC保留在`POST /`。
+- 测试：`skill-lifecycle`、`repair`、`verify`、`patterns`、`workspace`、`transfer`、`rpc`、`team`。
+
+### v1.5.0（2026-08-09）同步原语（Phase 0）
+
+- 全部数据表新增行级同步身份：`uuid`+`origin`+`deleted`墓碑；旧库在迁移时幂等回填。
+- `node_id`持久化进`config`；Lamport时钟（`config.lamport_clock`）每次写入自增——这是跨智能体/跨平台/团队同步记忆的地基。
+- 显式删除（记忆移除/拒绝、技能归档、画像删除）落墓碑，以"删除"而非"残留"形式复制。
+- 导出表面：`lib/index.ts`把引擎独立于OpenCode适配器重新导出。
+- 新增`tests/sync.test.ts`（node id、时钟单调性、打戳、墓碑、迁移回填）。
 
 ### v1.4.0（2026-08-09）入口模块化
 

@@ -1,8 +1,8 @@
 # selfforge
 
-A unified self-evolution engine for [OpenCode](https://opencode.ai). One plugin merges four capabilities into a single store with a single set of tools.
+A unified self-evolution engine for [OpenCode](https://opencode.ai). One plugin merges many capabilities into a single store with a single set of tools.
 
-Selfforge learns from your conversations, tracks goals, manages persistent memory, distills and optimizes reusable skills, and escalates behavioral rules — all through one plugin and one SQLite database.
+Selfforge learns from your conversations, tracks goals, manages persistent memory, distills and optimizes reusable skills, escalates behavioral rules, repairs its own decisions, and syncs knowledge across agents, machines and teams — all through one plugin and one SQLite database.
 
 ## What it merges
 
@@ -14,6 +14,11 @@ Selfforge learns from your conversations, tracks goals, manages persistent memor
 | Behavioral rules → AGENTS.md | self-improving-agent | `rule_*` |
 | Goal-driven PDCA loop | miles990/self-evolving-agent | `goal_*`, checkpoints CP0–CP6.5 |
 | Skill lifecycle curation | autolearn | `curator_*` |
+| Skill trial lifecycle + anti-hallucination | MemOS (memos-local-plugin) | `skill_status`, `skill_feedback`, `skill_verify`, `pattern_*` |
+| Decision repair (feedback → repairs) | MemOS `core/feedback` + `core/decision-repair` | `repair_*`, `feedback_classify` |
+| Work-environment awareness | MemOS workspace fingerprinting | `workspace_*`, scoped recall |
+| Cross-agent / platform transfer | own | `transfer_*`, `cli/selfforge.ts`, local JSON-RPC |
+| Team shared memory | own (git-backed) | `team_*` |
 
 Everything is stored in a single SQLite database at `~/.evolve/unified.db` (or `$EVOLVE_HOME`).
 
@@ -69,12 +74,17 @@ Manual install:
 | --- | --- |
 | Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief`, `memory_candidates`, `memory_confirm`, `memory_reject` |
 | User profile | `user_add`, `user_list`, `user_remove` |
-| Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage` |
+| Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage`, `skill_status`, `skill_feedback`, `skill_verify` |
 | Rules | `rule_observe`, `rule_status`, `rule_escalate` |
 | Goals | `goal_start`, `goal_status`, `goal_checkpoint`, `goal_complete`, `goal_stop` |
 | Evolution | `evolution_status`, `evolution_propose`, `evolution_apply`, `evolution_reject` |
 | Session recall | `session_search` (FTS5 full-text search over all past conversations) |
 | Curator | `curator_run`, `curator_status` |
+| Decision repair | `repair_run`, `repair_signal`, `feedback_classify`, `repair_status`, `repair_list`, `repair_accept`, `repair_reject` |
+| Pattern candidates | `pattern_status`, `pattern_record`, `pattern_induce`, `pattern_signature` |
+| Workspaces | `workspace_status`, `workspace_scan`, `workspace_list` |
+| Transfer | `transfer_export`, `transfer_import`, `transfer_preview`, `transfer_status` |
+| Team sync | `team_sync`, `team_status`, `team_init`, `team_ping` |
 
 ## Architecture
 
@@ -85,11 +95,15 @@ Manual install:
   ├── skills                        distilled skills (mirrored to ~/.agents/skills/)
   ├── rules                         behavioral rules for AGENTS.md escalation
   ├── goals + checkpoints           PDCA goal tracking
-  └── evolution                     GEPA-style candidates (human-gated apply)
+  ├── evolution                     GEPA-style candidates (human-gated apply)
+  ├── signals / repairs             decision-repair: step success/failure + repair drafts
+  ├── pattern_signatures            zero-LLM recurrence buckets (episode quorum → memory)
+  ├── workspaces                    environment fingerprint + ws: scoped memories
+  └── config                        node_id + Lamport clock (row-level sync identity)
 
 opencode plugin (selfforge.ts)
   ├── session hooks                 turn counting, buffering, secret redaction, social-closer filter
-  ├── tool.execute.after            skill usage tracking
+  ├── tool.execute.after            skill usage tracking + failure/success signals
   └── chat.system.transform         advisory injection (active goals, evolution candidates)
 ```
 
@@ -114,23 +128,68 @@ All data is stored locally under `~/.evolve/`. Nothing leaves your machine. No o
 The plugin is modular so each upgrade touches the smallest possible surface:
 
 - `plugin/selfforge.ts` — thin entry: lifecycle hooks only (event buffering, threshold/idle review, goal/evolution advisories, dispose).
-- `plugin/selfforge/lib/` — **engine layer, zero OpenCode dependency**: `db`, `memory`, `skills`, `rules`, `goals`, `evolution`, `review`, `user`, plus `index.ts` as the engine import surface (usable by CLI/RPC/other agents).
-- `plugin/selfforge/lib/tools/` — tool registration grouped by domain: `memory.ts`, `user.ts`, `skills.ts`, `rules.ts`, `goals.ts`, `evolution.ts`, `curator.ts`. Add or fix a tool here without touching the entry.
+- `plugin/selfforge/lib/` — **engine layer, zero OpenCode dependency**: `db`, `memory`, `skills`, `rules`, `goals`, `evolution`, `review`, `user`, `repair`, `patterns`, `verify`, `workspace`, `transfer`, `sync`, `rpc`, plus `index.ts` as the engine import surface (usable by CLI/RPC/other agents).
+- `plugin/selfforge/lib/tools/` — tool registration grouped by domain: `memory.ts`, `user.ts`, `skills.ts`, `rules.ts`, `goals.ts`, `evolution.ts`, `curator.ts`, `repair.ts`, `patterns.ts`, `workspace.ts`, `transfer.ts`, `team.ts`. Add or fix a tool here without touching the entry.
+- `cli/selfforge.ts` — standalone CLI (status/export/import/serve/team) powered by the zero-dependency engine.
 
 ## Sync-ready rows (Phase 0)
 
-Every data table (`memories`, `skills`, `rules`, `goals`, `checkpoints`, `evolution`, `observations`, `user_profile`) carries row-level identity so replicas can be merged across agents, machines and platforms:
+Every data table (`memories`, `skills`, `rules`, `goals`, `checkpoints`, `evolution`, `observations`, `user_profile`, `signals`, `repairs`, `pattern_signatures`) carries row-level identity so replicas can be merged across agents, machines and platforms:
 
 - `uuid` — unique row id (RFC 4122), backfilled on legacy DBs at migration.
 - `origin` — the `node_id` that created the row (persisted in `config`).
 - `deleted` — tombstone: soft deletes set `deleted = 1` so removals replicate.
 - Lamport clock in `config.lamport_clock`, bumped by `db.stamp()` on every write for conflict ordering.
 
+## MemOS-inspired engine (Phase 1)
+
+Four capabilities adapted from MemOS (`memos-local-plugin`), all deterministic and zero-LLM:
+
+- **Skill trial lifecycle:** every skill starts as `candidate` with `eta = (passed+1)/(attempted+2)` (Beta(1,1)). It graduates to `active`/`archived` after a quorum of trials, `skill_feedback` (+/− 0.1) supports rehab/retire, and `evolution_apply` feeds a reward drift (`0.7η + 0.3m`).
+- **Decision repair:** step-level success/failure signals (`signals_auto`, default on) feed a burst detector (rolling window, cooldown). A repair burst or a classified user preference (`用X代替Y`/`prefer X over Y`/negations) drafts a deterministic repair with evidence; `repair_accept`/`repair_reject` gate application.
+- **Anti-hallucination verification:** `skill_verify` checks a skill draft's tool mentions against real evidence (observed tool calls, code-fence commands) and reports tool-coverage + evidence resonance. Drafts fail fast instead of shipping fabricated tool names.
+- **Pattern signature candidate pool:** a recurring sub-problem is fingerprinted as `primaryTag|secondaryTag|tool|errCode`, hashed to a 16-hex bucket. Only buckets with ≥ N distinct episodes (default 2, TTL-pruned) induce a candidate memory — a single flaky episode never mints knowledge.
+
+## Work-environment awareness (Phase 2)
+
+Workspaces are fingerprinted from cheap stack markers (`package.json`, `pyproject.toml`, `go.mod`, `Dockerfile`, …) into a stable `ws:<basename>:<hash>` scope key. Memories can be scoped to that key, and `memoryRecall` applies a `scopeBoost` so the current workspace's lessons rank first — no embeddings needed.
+
+## Cross-agent / platform transfer (Phase 3)
+
+A portable snapshot serializes the whole store (`format: selfforge-snapshot`) with per-row identity. `transfer_export`/`transfer_import` move it between machines/agents/platforms; importing is a per-uuid last-write-wins merge (newer `updated_at` wins, tie-broken by node id, tombstones delete). The zero-dependency engine (`lib/index.ts`) also powers:
+
+- `cli/selfforge.ts` — `status`, `export`, `import` (with `--dry-run`), `serve`, `team` subcommands; runs anywhere with bun, no OpenCode needed.
+- local JSON-RPC server (`lib/rpc.ts`) — `ping`, `status`, `memory.list`, `skills.list`, `workspaces.list`, `goals.list`, `snapshot.export`/`snapshot.import` over HTTP.
+
+## Team shared memory (Phase 4)
+
+A git repo holds `snapshot.json` as the shared truth. `team_sync` runs pull → per-uuid LWW merge into the local store → re-export → commit → push, so any number of nodes converge. `team_init` bootstraps a repo (optionally with a remote); tombstones propagate as removals.
+
+## Visual management (Phase 5)
+
+`selfforge serve` (or `bun cli/selfforge.ts serve`) starts a zero-dependency HTTP server:
+
+- `GET /` — single-page dashboard (overview counts, memories, skills, goals, pending repairs, pattern candidates).
+- `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/repairs`, `/api/patterns`, `/api/workspaces`).
+- `POST /` — the JSON-RPC surface above.
+
 ## License
 
 MIT
 
 ## Version history
+
+### v1.7.0 (2026-08-10) MemOS engine + cross-agent + team sync + dashboard (Phases 1–5)
+
+- **Skill trial lifecycle (Phase 1):** skills carry Beta(1,1) `eta`, start as `candidate`, graduate by trial quorum (`skill_candidate_trials`, default 3), reward drift from `evolution_apply`, rehab/retire via `skill_feedback`. Tools: `skill_status`, `skill_feedback`.
+- **Decision repair (Phase 1):** step-level success/failure signals (`signals_auto`) feed a burst detector + cooldown; classified user preferences and anti-patterns draft deterministic repairs with evidence. Tools: `repair_run`, `repair_signal`, `feedback_classify`, `repair_status`, `repair_list`, `repair_accept`, `repair_reject`.
+- **Anti-hallucination verification (Phase 1):** `skill_verify` scores a skill draft's tool coverage + evidence resonance against real observed tool calls and code-fence commands; `skill_create` reports the advisory.
+- **Pattern signature candidates (Phase 1):** recurring sub-problems are fingerprinted as `primaryTag|secondaryTag|tool|errCode`, hashed to 16-hex buckets; only buckets with ≥ N distinct episodes (TTL-pruned) induce candidate memories. Tools: `pattern_status`, `pattern_record`, `pattern_induce`, `pattern_signature`.
+- **Workspace awareness (Phase 2):** `workspaces` table + stack-marker fingerprint → `ws:` scope keys; `memoryRecall` applies a `scopeBoost`. Tools: `workspace_status`, `workspace_scan`, `workspace_list`.
+- **Cross-agent/platform transfer (Phase 3):** portable snapshot + per-uuid LWW import; CLI `cli/selfforge.ts`; zero-dependency local JSON-RPC. Tools: `transfer_export`, `transfer_import`, `transfer_preview`, `transfer_status`.
+- **Team shared memory (Phase 4):** git repo holds `snapshot.json`; `team_sync` = pull → LWW merge → re-export → push. Tools: `team_sync`, `team_status`, `team_init`, `team_ping`.
+- **Visual management (Phase 5):** `selfforge serve` serves a single-page dashboard at `GET /` plus JSON endpoints at `/api/*`; JSON-RPC stays under `POST /`.
+- Tests: `skill-lifecycle`, `repair`, `verify`, `patterns`, `workspace`, `transfer`, `rpc`, `team`.
 
 ### v1.5.0 (2026-08-09) Sync primitives (Phase 0)
 
