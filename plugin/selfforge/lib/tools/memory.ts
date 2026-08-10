@@ -12,6 +12,7 @@ import {
   memoryConfirm,
   memoryReject,
   isBlockedMemoryContent,
+  recallFeedback,
   MEMORY_TYPES,
 } from "../memory"
 import { logObs } from "../db"
@@ -66,6 +67,9 @@ export const memoryTools = {
         expires_at: args.expires_at,
       })
       logObs("memory_add", res, ctx.directory)
+      if ((res as { gated?: boolean }).gated) {
+        return { output: `Memory not recorded: ${(res as { reason: string }).reason}` }
+      }
       const mergedNote = res.merged ? " (merged into existing memory)" : ""
       const statusNote = res.status === "candidate" ? " [candidate — confirm via memory_confirm]" : ""
       return {
@@ -172,7 +176,7 @@ export const memoryTools = {
 
   memory_search: tool({
     description:
-      "Surgically recall the most relevant confirmed memories for a query topic (keyword-scored). Use instead of dumping all memories. For short queries, also surfaces recent evolution criteria as authoritative behavior guidance.",
+      "Surgically recall the most relevant confirmed memories for a query topic (keyword-scored + evidence-weighted). Use instead of dumping all memories. For short queries, also surfaces recent evolution criteria as authoritative behavior guidance.",
     args: {
       query: tool.schema.string().describe("Topic/keywords to recall against"),
       limit: tool.schema.number().optional().describe("Max matches (default 5)"),
@@ -206,6 +210,20 @@ export const memoryTools = {
       )
       if (lines.length === 0) return { output: "No relevant memories found." }
       return { output: lines.join("\n") }
+    },
+  }),
+
+  memory_feedback: tool({
+    description:
+      "Give explicit useful/not-useful feedback about a recalled memory. Feeds the feature-3 evidence loop: word-level precision weights shift so future recalls of the same topic rank better.",
+    args: {
+      memory_id: tool.schema.number().describe("Memory id that was recalled"),
+      useful: tool.schema.boolean().describe("true = this memory was helpful; false = it was not relevant/helpful"),
+    },
+    async execute(args, ctx) {
+      const res = recallFeedback(args.memory_id, args.useful)
+      logObs("memory_feedback", { memory_id: args.memory_id, useful: args.useful, result: res }, ctx.directory)
+      return { output: res.message }
     },
   }),
 }

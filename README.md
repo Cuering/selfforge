@@ -72,14 +72,15 @@ Manual install:
 
 | Group | Tools |
 | --- | --- |
-| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief`, `memory_candidates`, `memory_confirm`, `memory_reject` |
+| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief`, `memory_candidates`, `memory_confirm`, `memory_reject`, `memory_feedback` |
+| Session state | `session_summary`, `session_summaries`, `session_search` |
+| Recall eval | `memory_eval` |
 | User profile | `user_add`, `user_list`, `user_remove` |
 | Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage`, `skill_status`, `skill_feedback`, `skill_verify` |
 | Rules | `rule_observe`, `rule_status`, `rule_escalate` |
 | Goals | `goal_start`, `goal_status`, `goal_checkpoint`, `goal_complete`, `goal_stop` |
 | Evolution | `evolution_status`, `evolution_propose`, `evolution_apply`, `evolution_reject` |
-| Session recall | `session_search` (FTS5 full-text search over all past conversations) |
-| Curator | `curator_run`, `curator_status` |
+| Session recall | `session_search` (FTS5 full-text search over all past conversations) || Curator | `curator_run`, `curator_status` |
 | Decision repair | `repair_run`, `repair_signal`, `feedback_classify`, `repair_status`, `repair_list`, `repair_accept`, `repair_reject` |
 | Pattern candidates | `pattern_status`, `pattern_record`, `pattern_induce`, `pattern_signature` |
 | Workspaces | `workspace_status`, `workspace_scan`, `workspace_list` |
@@ -99,6 +100,8 @@ Manual install:
   ├── signals / repairs             decision-repair: step success/failure + repair drafts
   ├── pattern_signatures            zero-LLM recurrence buckets (episode quorum → memory)
   ├── workspaces                    environment fingerprint + ws: scoped memories
+  ├── session_summaries             fixed-size compressed session state (distilled, not raw replay)
+  ├── recall_evidence               per-word recall feedback (hits/positives/negatives)
   └── config                        node_id + Lamport clock (row-level sync identity)
 
 opencode plugin (selfforge.ts)
@@ -173,11 +176,30 @@ A git repo holds `snapshot.json` as the shared truth. `team_sync` runs pull → 
 - `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/repairs`, `/api/patterns`, `/api/workspaces`).
 - `POST /` — the JSON-RPC surface above.
 
+## Metis-inspired memory (v1.8)
+
+Five capabilities adapted from the [MemTensor Metis](https://github.com/MemTensor/Metis) memory-foundation-model paper — `native memory state`, `learned utilization`, and `fixed-size session state` — kept deterministic and zero-LLM:
+
+- **Fixed-size session state (`session_summary`):** conversation history is distilled into a bounded digest of user directives/decisions (`session_summaries`), so later queries read a compact state instead of replaying the raw transcript — the plugin builds it automatically after each review.
+- **Informative write gate:** a confirmed write must add enough novel tokens over the existing store (`memory_novelty_gate`, default 0.35); redundant rewrites are rejected instead of bloating memory. Candidate writes are exempt.
+- **Recall evidence loop (`memory_feedback`):** every recall records per-word hits; explicit useful/not-useful feedback adjusts word-level precision weights that re-rank future recalls — learned utilization without an LLM.
+- **Tiered injection fusion:** `composeMemoryContext` fuses memory in priority tiers — current workspace first, then scoped lessons, then general — so the most situational signal is closest to the querying head.
+- **Recall eval benchmark (`memory_eval` / `selfforge eval`):** seeds a known fixture set and reports precision@k over a battery of positive and negative queries, keeping recall regressions visible.
+
 ## License
 
 MIT
 
 ## Version history
+
+### v1.8.0 (2026-08-10) Metis-inspired memory (native state, learned utilization, fixed-size state)
+
+- **Fixed-size session state:** new `session_summaries` table + `lib/summary.ts` distills a session's user directives/decisions into a bounded digest; the plugin builds it after every review and fuses it into the injected context. Tools: `session_summary`, `session_summaries`.
+- **Informative write gate:** `memoryAddDedup` now rejects confirmed writes whose token novelty over the existing store falls below `memory_novelty_gate` (default 0.35); candidates are exempt. New `memoryNovelty` / `noveltyGate`.
+- **Recall evidence loop:** new `recall_evidence` table records per-word hits on every recall; `memory_feedback` (+/−) adjusts word-level precision weights that re-rank future recalls. `recallFeedback` also strengthens/weakens the underlying memory by id.
+- **Tiered injection fusion:** `composeMemoryContext` ranks confirmed memories workspace → scoped → general and can fuse a session-state block.
+- **Recall eval:** new `lib/eval.ts` seeds a fixture set and reports precision@k; surfaced as `memory_eval` tool and `selfforge eval` CLI.
+- Tests: new `tests/metis.test.ts` (13 cases) — full suite 99 pass.
 
 ### v1.7.0 (2026-08-10) MemOS engine + cross-agent + team sync + dashboard (Phases 1–5)
 

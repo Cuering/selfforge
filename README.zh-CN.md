@@ -72,7 +72,9 @@ bash selfforge/install.sh
 
 |分组|工具|
 |---|---|
-|记忆|`memory_add`、`memory_search`、`memory_list`、`memory_strengthen`、`memory_weaken`、`memory_remove`、`memory_status`、`memory_brief`、`memory_candidates`、`memory_confirm`、`memory_reject`|
+|记忆|`memory_add`、`memory_search`、`memory_list`、`memory_strengthen`、`memory_weaken`、`memory_remove`、`memory_status`、`memory_brief`、`memory_candidates`、`memory_confirm`、`memory_reject`、`memory_feedback`|
+|会话状态|`session_summary`、`session_summaries`、`session_search`|
+|召回评测|`memory_eval`|
 |用户画像|`user_add`、`user_list`、`user_remove`|
 |技能|`skill_create`、`skill_patch`、`skill_list`、`skill_archive`、`skill_usage`、`skill_status`、`skill_feedback`、`skill_verify`|
 |规则|`rule_observe`、`rule_status`、`rule_escalate`|
@@ -99,6 +101,8 @@ bash selfforge/install.sh
   ├── signals / repairs             决策修复：步骤成败信号+修复草稿
   ├── pattern_signatures            零LLM复发桶（episode阈值→记忆）
   ├── workspaces                    环境指纹+ws:作用域记忆
+  ├── session_summaries             固定大小压缩会话状态（蒸馏而非原文重放）
+  ├── recall_evidence               逐词召回反馈（hits/positives/negatives）
   └── config                        node_id+Lamport时钟（行级同步身份）
 
 opencode插件（selfforge.ts）
@@ -155,7 +159,26 @@ git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐
 - `GET /api/*`——JSON端点（`/api/dashboard`、`/api/memories`、`/api/skills`、`/api/goals`、`/api/repairs`、`/api/patterns`、`/api/workspaces`）。
 - `POST /`——上述JSON-RPC接口。
 
+## Metis式记忆（v1.8）
+
+借鉴自[MemTensor Metis](https://github.com/MemTensor/Metis)记忆基础模型论文的五个能力——`原生记忆状态`、`习得化利用`、`固定大小会话状态`——全部保持确定性与零LLM：
+
+- **固定大小会话状态（`session_summary`）：**对话历史被蒸馏成有界的用户指令/决策摘要（`session_summaries`），后续查询读取紧凑状态而非重放原始记录——插件在每次复盘后自动构建。
+- **信息量写入门控：**confirmed写入必须相对现有存储贡献足够的全新token（`memory_novelty_gate`默认0.35）；冗余改写被拒绝而非膨胀记忆库。candidate写入豁免。
+- **召回证据闭环（`memory_feedback`）：**每次召回记录逐词hits；显式的有用/无用反馈调整词级精确度权重，为未来召回重新排序——无需LLM的习得化利用。
+- **分级注入融合：**`composeMemoryContext`按当前工作区→作用域→通用三级融合记忆，让最具情境性的信号最贴近查询头部。
+- **召回评测基准（`memory_eval`/`selfforge eval`）：**播种已知样例集，对一组正负查询报告precision@k，让召回退化可见。
+
 ## 版本更新说明
+
+### v1.8.0（2026-08-10）Metis式记忆（原生状态、习得化利用、固定大小状态）
+
+- **固定大小会话状态：**新增`session_summaries`表与`lib/summary.ts`，把会话中的用户指令/决策蒸馏成有界摘要；插件在每次复盘后自动构建并融合进注入上下文。工具：`session_summary`、`session_summaries`。
+- **信息量写入门控：**`memoryAddDedup`现在会拒绝相对现有存储的token新颖度低于`memory_novelty_gate`（默认0.35）的confirmed写入；candidate写入豁免。新增`memoryNovelty`/`noveltyGate`。
+- **召回证据闭环：**新增`recall_evidence`表，每次召回记录逐词hits；`memory_feedback`（+/-）调整词级精确度权重，为未来召回重新排序。`recallFeedback`同时按id强化/弱化底层记忆。
+- **分级注入融合：**`composeMemoryContext`按工作区→作用域→通用三级排序，并可融合会话状态块。
+- **召回评测：**新增`lib/eval.ts`，播种已知样例集并报告precision@k；通过`memory_eval`工具与`selfforge eval`CLI暴露。
+- 测试：新增`tests/metis.test.ts`（13个用例）——全量99通过。
 
 ### v1.7.0（2026-08-10）MemOS引擎+跨智能体+团队同步+仪表盘（Phase 1–5）
 

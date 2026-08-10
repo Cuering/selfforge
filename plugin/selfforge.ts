@@ -15,10 +15,13 @@ import { curatorTools } from "./selfforge/lib/tools/curator"
 import { repairTools } from "./selfforge/lib/tools/repair"
 import { patternTools } from "./selfforge/lib/tools/patterns"
 import { workspaceTools } from "./selfforge/lib/tools/workspace"
+import { summaryTools } from "./selfforge/lib/tools/summary"
+import { evalTools } from "./selfforge/lib/tools/eval"
 import { transferTools } from "./selfforge/lib/tools/transfer"
 import { teamTools } from "./selfforge/lib/tools/team"
 import { recordSignal } from "./selfforge/lib/repair"
-import { touchWorkspace } from "./selfforge/lib/workspace"
+import { touchWorkspace, scopeFor, fingerprintOf } from "./selfforge/lib/workspace"
+import { summarizeSession, getSessionSummary } from "./selfforge/lib/summary"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -27,8 +30,15 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const projectName = () =>
     (directory || worktree || process.cwd()).split(/[\\/]/).pop() || "unknown"
 
-  composeMemoryContext()
-  logObs("plugin_loaded", { version: "1.7.0" }, projectName())
+  // Feature 4: workspace-aware memory injection (tiered fusion)
+  let wsScope: string | null = null
+  try {
+    const dir = directory || worktree || process.cwd()
+    wsScope = scopeFor(dir, fingerprintOf(dir))
+  } catch {}
+
+  composeMemoryContext({ wsScope: wsScope ?? undefined })
+  logObs("plugin_loaded", { version: "1.8.0" }, projectName())
   try {
     touchWorkspace(directory || worktree || process.cwd())
   } catch {}
@@ -89,6 +99,11 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     const captured = [...buf]
     const res = spawnReview(captured, s.project || projectName(), reviewCmd())
     sessionSet(sessionId, { buffer: "[]", last_review_turn: s.turn_count })
+    // Feature 1: distill the consumed buffer into a fixed-size session state
+    try {
+      summarizeSession(sessionId, captured, s.turn_count)
+      logObs("session_summary_built", { session: sessionId, facts: getSessionSummary(sessionId)?.fact_count ?? 0 }, s.project || projectName())
+    } catch {}
     logObs("review_triggered", { reason, result: res }, s.project || projectName())
     setTimeout(() => {
       reviewInProgress = false
@@ -258,6 +273,8 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...repairTools,
     ...patternTools,
     ...workspaceTools,
+    ...summaryTools,
+    ...evalTools,
     ...transferTools,
     ...teamTools,
   }

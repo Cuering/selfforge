@@ -213,6 +213,21 @@ export function memoryStrengthen(keyword: string) {
   return { matched: rows.length, ids: rows.map((r) => r.id), promoted }
 }
 
+/** Strengthen a memory by id (used by the recall-evidence feedback loop). */
+export function strengthenById(id: number) {
+  const db = getDb()
+  const r = db.query("SELECT * FROM memories WHERE id = ? AND archived = 0").get(id) as Memory | undefined
+  if (!r) return { ok: false, message: `No active memory with id ${id}` }
+  const ts = now()
+  const newStrength = r.strength + 1
+  const access = (r.access_count ?? 0) + 1
+  const nxt = nextLifecycle(r.lifecycle ?? "temporary", access)
+  db.query(
+    "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
+  ).run(newStrength, computeTier(newStrength), access, nxt.lifecycle, ts, ts, ts, id)
+  return { ok: true, id, strength: newStrength, promoted: nxt.promoted }
+}
+
 export function memoryWeaken(keyword: string) {
   const db = getDb()
   const rows = db
@@ -383,6 +398,42 @@ function similarity(a: string, b: string): number {
   return inter / Math.min(ta.size, tb.size)
 }
 
+/**
+ * Feature 2 — informative write gate (Metis GDN analog).
+ *
+ * Metis only lets informative hidden states update memory. selfforge mirrors
+ * that by measuring how much NEW information a prospective memory adds over
+ * the existing confirmed store. `memoryNovelty` returns the fraction of the
+ * candidate's tokens that are NOT already covered by the best single existing
+ * memory (token coverage, not mere similarity). A write whose novelty is
+ * below `memory_novelty_gate` is rejected as redundant rather than stored.
+ */
+export function memoryNovelty(content: string): { novelty: number; coverage: number; covered_by: { id: number; content: string } | null } {
+  const rows = getDb().query("SELECT * FROM memories WHERE archived = 0 AND status = 'confirmed'").all() as Memory[]
+  const c = tokenize(content)
+  if (c.size === 0) return { novelty: 0, coverage: 1, covered_by: null }
+  let bestCov = 0
+  let best: { id: number; content: string } | null = null
+  for (const r of rows) {
+    const rt = tokenize(r.content)
+    if (rt.size === 0) continue
+    let cov = 0
+    for (const w of c) if (rt.has(w)) cov++
+    const covRatio = cov / c.size
+    if (covRatio > bestCov) {
+      bestCov = covRatio
+      best = { id: r.id, content: r.content }
+    }
+  }
+  return { novelty: 1 - bestCov, coverage: bestCov, covered_by: best }
+}
+
+/** Feature 2 config: minimum fraction of NEW tokens a write must contribute. */
+export function noveltyGate(): number {
+  const g = Number(getConfig("memory_novelty_gate", "0.35"))
+  return Math.max(0, Math.min(1, g))
+}
+
 /** Dedup-aware add: strengthen the best near-duplicate (sim >= 0.7) instead of inserting. */
 export function memoryAddDedup(
   content: string,
@@ -395,9 +446,32 @@ export function memoryAddDedup(
     status?: "confirmed" | "candidate"
     confidence?: number
     expires_at?: string
+    /** Feature 2: enforce the informative-novelty gate before inserting (default true). */
+    gate?: boolean
   }
 ) {
   const rows = getDb().query("SELECT * FROM memories WHERE archived = 0").all() as Memory[]
+
+  // Feature 2 — informative write gate: a confirmed write that adds too little
+  // novel token content over the existing confirmed store is redundant. Checked
+  // BEFORE dedup so exact re-writes are caught too (candidates are exempt).
+  const gateEnabled = opts?.gate !== false
+  if (gateEnabled && opts?.status !== "candidate") {
+    const nv = memoryNovelty(content)
+    const gate = noveltyGate()
+    if (nv.novelty < gate && nv.covered_by) {
+      return {
+        merged: false,
+        blocked: true,
+        gated: true,
+        reason: `redundant (novelty ${nv.novelty.toFixed(2)} < gate ${gate.toFixed(2)}; covered by memory #${nv.covered_by.id})`,
+        id: 0,
+        covered_by: nv.covered_by.id,
+        novelty: nv.novelty,
+      }
+    }
+  }
+
   let best: Memory | undefined
   let bestSim = 0
   for (const r of rows) {
@@ -440,6 +514,7 @@ export function memoryAddDedup(
       status,
     }
   }
+
   return { merged: false, ...memoryAdd(content, opts) }
 }
 
@@ -456,22 +531,82 @@ function tokenize(text: string): Set<string> {
 }
 
 /**
+ * Feature 3 — recall evidence loop (Metis "learned utilization" analog).
+ *
+ * Metis learns storage/utilization from data instead of handcrafted rules.
+ * selfforge stays zero-LLM but closes the loop with per-word evidence:
+ * every recall increments `hits` for each (query word, recalled memory)
+ * pair; explicit useful/not-useful feedback (`recallFeedback`) adjusts
+ * `positives`/`negatives`. The score bonus below is the empirical
+ * precision of a word for a memory: (positives - negatives) / hits.
+ */
+
+export type RecallEvidence = {
+  id: number
+  word: string
+  memory_id: number
+  hits: number
+  positives: number
+  negatives: number
+  updated_at: string | null
+  deleted: number
+}
+
+/** Record that `word` led to `memoryId` being recalled (hit incremented). */
+export function recordRecallHit(word: string, memoryId: number) {
+  try {
+    const db = getDb()
+    const ts = now()
+    db.query(
+      `INSERT INTO recall_evidence (word, memory_id, hits, positives, negatives, updated_at, deleted)
+       VALUES (?, ?, 1, 0, 0, ?, 0)
+       ON CONFLICT(word, memory_id) DO UPDATE SET hits = hits + 1, updated_at = excluded.updated_at`
+    ).run(word.toLowerCase(), memoryId, ts)
+  } catch {}
+}
+
+/** Record explicit user feedback about a recalled memory (word-level precision). */
+export function recallFeedback(memoryId: number, useful: boolean): { ok: boolean; matched: number; message: string } {
+  const db = getDb()
+  const rows = db
+    .query("SELECT * FROM recall_evidence WHERE memory_id = ? AND deleted = 0")
+    .all(memoryId) as RecallEvidence[]
+  if (rows.length === 0) return { ok: false, matched: 0, message: `No recall evidence recorded for memory #${memoryId}` }
+  const ts = now()
+  const col = useful ? "positives" : "negatives"
+  for (const r of rows) {
+    db.query(`UPDATE recall_evidence SET ${col} = ${col} + 1, updated_at = ? WHERE id = ?`).run(ts, r.id)
+  }
+  // feedback also feeds the memory decay model directly (reinforce/weaken)
+  if (useful) strengthenById(memoryId)
+  return { ok: true, matched: rows.length, message: `Recorded ${useful ? "positive" : "negative"} feedback for memory #${memoryId} (${rows.length} words)` }
+}
+
+/** Empirical precision bonus for a (word, memory) pair: (pos-neg)/hits in [-1, 1]. */
+function evidenceWeight(row: RecallEvidence | undefined): number {
+  if (!row || row.hits <= 0) return 0
+  return Math.max(-1, Math.min(1, (row.positives - row.negatives) / row.hits))
+}
+
+/**
  * Lightweight relevance recall: score memories against a query by keyword
- * overlap (token intersection, weighted by strength). Used for surgical
- * injection rather than dumping the whole store. Threshold-guarded.
+ * overlap (token intersection, weighted by strength + evidence feedback).
+ * Used for surgical injection rather than dumping the whole store.
+ * Threshold-guarded.
  */
 export function memoryRecall(
   query: string,
-  opts?: { minScore?: number; limit?: number; scope?: string; wsScope?: string }
+  opts?: { minScore?: number; limit?: number; scope?: string; wsScope?: string; evidence?: boolean }
 ): Memory[] {
   const minScore = opts?.minScore ?? 2
   const limit = opts?.limit ?? 5
   const wsBoost = opts?.wsScope ? 1 : 0
+  const useEvidence = opts?.evidence !== false
   if (!query || query.trim().length < 2) return []
   const q = tokenize(query)
   const nowMs = Date.now()
   const rows = memoryList({ limit: 500, scope: opts?.scope })
-  const scored: Array<{ m: Memory; score: number }> = []
+  const scored: Array<{ m: Memory; score: number; hits: number }> = []
   for (const m of rows) {
     // only confirmed, unexpired memories are recallable (candidates stay out of context)
     if (m.status === "candidate") continue
@@ -483,28 +618,95 @@ export function memoryRecall(
     if (hits < minScore) continue
     const tierBonus = m.tier === "hot" ? 1 : m.tier === "warm" ? 0.5 : 0
     const boost = wsBoost ? scopeBoost(opts.wsScope!, m) : 0
-    scored.push({ m, score: hits + tierBonus + boost })
+    scored.push({ m, score: hits + tierBonus + boost, hits })
+  }
+  if (useEvidence && scored.length > 0) {
+    // one batched evidence lookup per candidate memory
+    const ids = scored.map((s) => s.m.id)
+    const evidence = new Map<number, RecallEvidence[]>()
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200).join(",")
+      const rowsEv = getDb()
+        .query(`SELECT * FROM recall_evidence WHERE memory_id IN (${chunk}) AND deleted = 0`)
+        .all() as RecallEvidence[]
+      for (const r of rowsEv) {
+        const list = evidence.get(r.memory_id) ?? []
+        list.push(r)
+        evidence.set(r.memory_id, list)
+      }
+    }
+    const byWord = new Map<number, Map<string, RecallEvidence>>()
+    for (const [mid, list] of evidence) {
+      const m = new Map<string, RecallEvidence>()
+      for (const r of list) m.set(r.word, r)
+      byWord.set(mid, m)
+    }
+    for (const s of scored) {
+      const wm = byWord.get(s.m.id)
+      if (!wm) continue
+      let evSum = 0
+      for (const w of q) {
+        const row = wm.get(w)
+        if (row) evSum += evidenceWeight(row)
+      }
+      s.score += evSum
+    }
   }
   scored.sort((a, b) => b.score - a.score)
   const top = scored.slice(0, limit)
   // access feedback: recalls reinforce last_accessed_at (feeds the decay/recency model)
+  // + record per-word hit evidence for the feature-3 loop
   if (top.length > 0) {
     const ts = now()
     for (const x of top) {
       getDb()
         .query("UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?")
         .run(ts, x.m.id)
+      for (const w of q) recordRecallHit(w, x.m.id)
     }
   }
   return top.map((x) => x.m)
 }
 
-export function composeMemoryContext(): string {
-  // confirmed only — candidates never reach the injected context
-  const memories = memoryList({ limit: 30, status: "confirmed" })
+/**
+ * Feature 4 — tiered injection fusion (Metis "memory attention" analog).
+ *
+ * Metis fuses the memory read with the original attention branch. selfforge
+ * fuses memory into the system context in priority tiers: current workspace
+ * -> related scoped -> general. Workspace-relevant lessons rank first (more
+ * get injected), then scoped lessons, then general ones — so the most
+ * situational signal is closest to the querying head.
+ */
+export function composeMemoryContext(opts?: { wsScope?: string; limit?: number; includeSession?: string }): string {
+  const limit = opts?.limit ?? 30
+  const wsCap = Math.min(10, Math.max(4, Math.round(limit * 0.4)))
+  const scopedCap = Math.min(8, Math.max(3, Math.round(limit * 0.25)))
+  const generalCap = limit - wsCap - scopedCap
+
+  const all = memoryList({ limit: 200, status: "confirmed" })
   const profile = getDb()
     .query("SELECT keyword, content FROM user_profile ORDER BY created_at DESC LIMIT 20")
     .all() as { keyword: string; content: string }[]
+
+  // tier assignment: current workspace match first, then any scoped, then general
+  const ws: Memory[] = []
+  const scoped: Memory[] = []
+  const general: Memory[] = []
+  for (const m of all) {
+    if (opts?.wsScope && scopeBoost(opts.wsScope, m) > 0) ws.push(m)
+    else if (m.scope) scoped.push(m)
+    else general.push(m)
+  }
+  const sortByStrength = (a: Memory, b: Memory) =>
+    b.strength - a.strength || (b.last_reinforced_at || "").localeCompare(a.last_reinforced_at || "")
+  ws.sort(sortByStrength)
+  scoped.sort(sortByStrength)
+  general.sort(sortByStrength)
+
+  const wsTop = ws.slice(0, wsCap)
+  const scopedTop = scoped.slice(0, scopedCap)
+  const generalTop = general.slice(0, generalCap)
+
   let md = "# Evolve Memory\n\n<!-- Managed by unified-evolver. Do not edit manually. -->\n\n"
   md += GROUND_TRUTH
   if (profile.length > 0) {
@@ -512,18 +714,37 @@ export function composeMemoryContext(): string {
     for (const p of profile) md += `- **${p.keyword}**: ${p.content}\n`
     md += "\n"
   }
-  if (memories.length === 0) {
+
+  const lines = (memories: Memory[]): string =>
+    memories
+      .map((m) => {
+        const lc = m.lifecycle && m.lifecycle !== "temporary" ? ` ${m.lifecycle}` : ""
+        const sc = m.scope ? ` (scope:${m.scope})` : ""
+        const vt = m.last_reinforced_at ? ` verified:${m.last_reinforced_at.slice(0, 10)}` : ""
+        return `- [${m.tier}/${m.strength}${lc}${sc}${vt}] ${m.content}`
+      })
+      .join("\n")
+
+  const sections: string[] = []
+  if (wsTop.length > 0) sections.push(`## Current Workspace\n\n${lines(wsTop)}`)
+  if (scopedTop.length > 0) sections.push(`## Scoped Lessons\n\n${lines(scopedTop)}`)
+  if (generalTop.length > 0) sections.push(`## General Lessons\n\n${lines(generalTop)}`)
+
+  if (sections.length === 0) {
     md += "_No persistent memories yet._\n"
-    writeFileSync(CONTEXT_FILE, md)
-    return md
+  } else {
+    md += sections.join("\n\n") + "\n"
   }
-  md += "## Persistent Lessons\n\n"
-  for (const m of memories) {
-    const lc = m.lifecycle && m.lifecycle !== "temporary" ? ` ${m.lifecycle}` : ""
-    const sc = m.scope ? ` (scope:${m.scope})` : ""
-    const vt = m.last_reinforced_at ? ` verified:${m.last_reinforced_at.slice(0, 10)}` : ""
-    md += `- [${m.tier}/${m.strength}${lc}${sc}${vt}] ${m.content}\n`
+
+  // Feature 1 — fixed-size session state fusion: distilled digest, not raw replay.
+  if (opts?.includeSession) {
+    try {
+      const { renderSessionState } = require("./summary")
+      const state = renderSessionState(opts.includeSession)
+      if (state) md += "\n" + state
+    } catch {}
   }
+
   writeFileSync(CONTEXT_FILE, md)
   return md
 }

@@ -41,6 +41,7 @@ Usage:
   selfforge serve --port <n>      Run a local JSON-RPC endpoint
   selfforge team init <dir>       Init a team repo (optionally --remote <url>)
   selfforge team sync [<dir>]     Pull, merge, re-export, push
+  selfforge eval [--k <n>]        Run the recall precision benchmark
 
 Options:
   --home <dir>   Override EVOLVE_HOME (default ~/.config/opencode)
@@ -114,6 +115,12 @@ async function main() {
       } else {
         console.log(JSON.stringify(teamStatus(), null, 2))
       }
+      break
+    }
+    case "eval": {
+      const { runRecallEval } = await import("../plugin/selfforge/lib/eval")
+      const k = Number(opt("--k", "3"))
+      console.log(JSON.stringify(runRecallEval({ k }), null, 2))
       break
     }
     case "serve": {

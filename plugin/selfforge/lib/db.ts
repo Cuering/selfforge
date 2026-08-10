@@ -229,6 +229,28 @@ CREATE TABLE IF NOT EXISTS workspaces (
   deleted INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_workspaces_scope ON workspaces (scope, last_seen);
+
+CREATE TABLE IF NOT EXISTS session_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT UNIQUE,
+  summary TEXT,
+  fact_count INTEGER DEFAULT 0,
+  covered_until_turn INTEGER DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS recall_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  word TEXT NOT NULL,
+  memory_id INTEGER NOT NULL,
+  hits INTEGER DEFAULT 0,
+  positives INTEGER DEFAULT 0,
+  negatives INTEGER DEFAULT 0,
+  updated_at TEXT,
+  deleted INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recall_evidence_word_mem ON recall_evidence (word, memory_id);
 `
 
 export function initDb(): Database {
@@ -305,6 +327,9 @@ function migrate(d: Database) {
   for (const [name, decl] of skillAdds) {
     if (!skillCols.has(name)) d.exec(`ALTER TABLE skills ADD COLUMN ${name} ${decl}`)
   }
+  // v1.8 recall feedback loop: per-word positive/negative evidence.
+  const evCols = tableCols("recall_evidence")
+  if (!evCols.has("negatives")) d.exec("ALTER TABLE recall_evidence ADD COLUMN negatives INTEGER DEFAULT 0")
 }
 
 export function getDb(): Database {
