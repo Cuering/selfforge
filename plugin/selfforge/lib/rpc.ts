@@ -414,36 +414,66 @@ const DASHBOARD_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>selfforge</title>
 <style>
-  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#d7dbe2; --dim:#8b93a3; --acc:#5b8def; --good:#4caf7d; --warn:#d9a13b; --bad:#e2605b; }
+  :root {
+    --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#d7dbe2; --dim:#8b93a3;
+    --acc:#5b8def; --good:#4caf7d; --warn:#d9a13b; --bad:#e2605b;
+    --strong:#fff; --hover:#1c2130; --cnt-bg:#262b36;
+    --t-hot-bg:#3d2e1e; --t-warm-bg:#1e2a3d; --t-cold-bg:#262b36; --t-evictable-bg:#332a1a;
+    --s-active-bg:#143524; --s-candidate-bg:#1e2a3d; --s-trial-bg:#1e2a3d; --s-archived-bg:#3a1e1e; --s-stale-bg:#332a1a;
+  }
+  [data-theme="light"] {
+    --bg:#f5f7fa; --panel:#ffffff; --line:#e1e6ef; --fg:#1c2733; --dim:#5c6b7a;
+    --acc:#3b6fe0; --good:#2e9e62; --warn:#b8811b; --bad:#d4524d;
+    --strong:#0f1115; --hover:#eef2f8; --cnt-bg:#e7ecf3;
+    --t-hot-bg:#fbe9d0; --t-warm-bg:#dce7fa; --t-cold-bg:#e8edf3; --t-evictable-bg:#f3e6c8;
+    --s-active-bg:#d9f0e2; --s-candidate-bg:#dce7fa; --s-trial-bg:#e3ecfb; --s-archived-bg:#f7dcdb; --s-stale-bg:#f3e6c8;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; }
-  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
-  header h1 { font-size:18px; margin:0; color:#fff; }
-  header .sub { color:var(--dim); font-size:12px; }
-  header button { margin-left:auto; background:var(--acc); color:#fff; border:0; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
-  main { padding:16px 24px; display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  section h2 { margin:0; padding:10px 14px; font-size:13px; color:var(--dim); border-bottom:1px solid var(--line); text-transform:uppercase; letter-spacing:.05em; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:8px; padding:12px; }
-  .card { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
-  .card b { display:block; font-size:20px; color:#fff; }
+  html,body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; flex:none; }
+  header h1 { font-size:17px; margin:0; color:var(--strong); }
+  header .sub { color:var(--dim); font-size:12px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  header .actions { margin-left:auto; display:flex; gap:8px; }
+  header button { background:var(--acc); color:var(--strong); border:0; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
+  header button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  header button.ghost:hover { border-color:var(--acc); color:var(--acc); }
+  .overview { padding:12px 20px; border-bottom:1px solid var(--line); flex:none; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(104px,1fr)); gap:8px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .card b { display:block; font-size:22px; color:var(--strong); line-height:1.2; }
   .card span { color:var(--dim); font-size:11px; }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  th,td { text-align:left; padding:6px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--dim); font-weight:500; }
-  td .tag { display:inline-block; padding:1px 7px; border-radius:99px; font-size:11px; margin-right:6px; }
-  .t-hot{background:#3d2e1e;color:var(--warn);} .t-warm{background:#1e2a3d;color:var(--acc);} .t-cold{background:#262b36;color:var(--dim);}
-  .s-active{background:#143524;color:var(--good);} .s-candidate{background:#1e2a3d;color:var(--acc);} .s-archived{background:#3a1e1e;color:var(--bad);} .s-stale{background:#332a1a;color:var(--warn);}
+  .layout { flex:1; display:flex; min-height:0; }
+  nav { width:158px; flex:none; border-right:1px solid var(--line); padding:12px 8px; overflow-y:auto; }
+  nav button { display:flex; align-items:center; justify-content:space-between; width:100%; background:transparent; border:0; border-radius:7px; color:var(--dim); padding:9px 12px; font-size:13px; cursor:pointer; margin-bottom:2px; font-family:inherit; }
+  nav button:hover { background:var(--hover); color:var(--strong); }
+  nav button.active { background:var(--acc); color:var(--strong); }
+  nav button .cnt { background:var(--cnt-bg); color:var(--dim); border-radius:99px; font-size:11px; padding:1px 8px; }
+  nav button.active .cnt { background:rgba(255,255,255,.22); color:var(--strong); }
+  main { flex:1; padding:16px 22px; overflow-y:auto; min-width:0; }
+  .tab-title { font-size:15px; color:var(--strong); margin:0 0 12px; }
+  .pane { display:none; }
+  .pane.active { display:block; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; font-size:12px; white-space:nowrap; }
+  tbody tr:last-child td { border-bottom:0; }
+  td .tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11px; margin-right:6px; white-space:nowrap; }
+  td .st { color:var(--dim); font-size:11px; }
+  td .content-cell { min-width:240px; word-break:break-word; }
+  .t-hot{background:var(--t-hot-bg);color:var(--warn);} .t-warm{background:var(--t-warm-bg);color:var(--acc);} .t-cold{background:var(--t-cold-bg);color:var(--dim);} .t-evictable{background:var(--t-evictable-bg);color:var(--warn);}
+  .s-active{background:var(--s-active-bg);color:var(--good);} .s-candidate{background:var(--s-candidate-bg);color:var(--acc);} .s-trial{background:var(--s-trial-bg);color:var(--acc);} .s-archived{background:var(--s-archived-bg);color:var(--bad);} .s-stale{background:var(--s-stale-bg);color:var(--warn);}
   .muted { color:var(--dim); }
-  pre { margin:0; padding:10px 12px; overflow:auto; max-height:300px; font-size:11px; }
-  .empty { padding:14px; color:var(--dim); font-size:12px; }
-  .scroll { max-height:480px; overflow-y:auto; }
-  td .act { display:inline-flex; gap:4px; margin-left:6px; }
-  td .act button { background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:4px; padding:1px 7px; font-size:11px; cursor:pointer; }
-  td .act button:hover { color:#fff; border-color:var(--acc); }
+  pre { margin:0; padding:10px 12px; overflow:auto; max-height:320px; font-size:11px; }
+  .empty { padding:16px; color:var(--dim); font-size:12px; }
+  td .act { display:inline-flex; gap:6px; white-space:nowrap; }
+  td .act button { background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:5px; padding:2px 10px; font-size:12px; cursor:pointer; white-space:nowrap; }
+  td .act button:hover { color:var(--strong); border-color:var(--acc); }
   td .act button.del:hover { border-color:var(--bad); color:var(--bad); }
-  .daycard { padding:12px; font-size:12px; }
-  .daycard h3 { margin:0 0 4px; font-size:13px; color:#fff; }
+  .daycard { padding:12px 16px; font-size:12px; } .daycard + .daycard { border-top:1px solid var(--line); }
+  .daycard h3 { margin:0 0 4px; font-size:13px; color:var(--strong); }
   .daycard .meta { color:var(--dim); font-size:11px; margin-bottom:6px; }
   .daycard ul { margin:0; padding-left:18px; }
 </style>
@@ -452,18 +482,41 @@ const DASHBOARD_HTML = `<!doctype html>
 <header>
   <h1>selfforge</h1>
   <span class="sub" id="sub">—</span>
-  <button onclick="location.reload()">刷新</button>
+  <div class="actions">
+    <button class="ghost" id="themeBtn" onclick="toggleTheme()">夜间</button>
+    <button onclick="location.reload()">刷新</button>
+  </div>
 </header>
-<main>
-  <section><h2>概览</h2><div class="cards" id="counts"></div></section>
-  <section><h2>记忆</h2><div class="scroll" id="memories"><div class="empty">加载中…</div></div></section>
-  <section><h2>每日总结</h2><div class="scroll" id="daily"><div class="empty">加载中…</div></div></section>
-  <section><h2>技能</h2><div id="skills"><div class="empty">加载中…</div></div></section>
-  <section><h2>目标</h2><div id="goals"><div class="empty">加载中…</div></div></section>
-  <section><h2>待决策修复</h2><div id="repairs"><div class="empty">加载中…</div></div></section>
-  <section><h2>模式候选</h2><div id="patterns"><div class="empty">加载中…</div></div></section>
-</main>
+<div class="overview"><div class="cards" id="counts"></div></div>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main id="main">
+    <h2 class="tab-title" id="tabTitle">记忆</h2>
+    <section class="pane active" id="pane-memories"><div class="panel" id="memories"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-skills"><div class="panel" id="skills"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-goals"><div class="panel" id="goals"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-daily"><div class="panel" id="daily"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-repairs"><div class="panel" id="repairs"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-patterns"><div class="panel" id="patterns"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-workspaces"><div class="panel" id="workspaces"><div class="empty">加载中…</div></div></section>
+  </main>
+</div>
 <script>
+function applyTheme(t){
+  document.documentElement.setAttribute("data-theme", t);
+  try { localStorage.setItem("theme", t); } catch (e) {}
+  document.getElementById("themeBtn").textContent = t === "light" ? "夜间" : "日间";
+}
+function toggleTheme(){
+  applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+}
+(function(){
+  let t = "dark";
+  try { t = localStorage.getItem("theme") || t; } catch (e) {}
+  if (t !== "light" && t !== "dark") t = "dark";
+  if (t === "dark" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) t = "light";
+  applyTheme(t);
+})();
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 async function get(p){ const r = await fetch(p); return r.json(); }
 async function rpc(method, params){
@@ -473,19 +526,29 @@ async function rpc(method, params){
   return j.result;
 }
 const TIER_ZH = { hot:"热", warm:"温", cold:"冷", evictable:"可淘汰" };
-const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归档", stale:"过期", active:"活跃" };
+const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归档", stale:"过期", active:"活跃", trial:"试用" };
 const LIFECYCLE_ZH = { temporary:"临时", active:"活跃", permanent:"长期", archived:"已归档" };
 const GOAL_ZH = { active:"进行中", completed:"已完成", stopped:"已停止" };
 const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差评", "user.preference":"用户偏好", manual:"手动", failure:"失败", success:"成功" };
-const PT_HEAD_ZH = { signature:"签名", tool:"工具", err_code:"错误码", episodes:"次数" };
-function tierClass(t){ return "tag t-" + t; }
-function statusClass(s){ return "tag s-" + s; }
+const COUNT_ZH = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", observations:"观测", repairs:"修复", patterns:"模式", workspaces:"工作区" };
+const TABS = [
+  { id:"memories", label:"记忆", key:"memories" },
+  { id:"skills", label:"技能", key:"skills" },
+  { id:"goals", label:"目标", key:"goals" },
+  { id:"daily", label:"每日总结", key:"daily" },
+  { id:"repairs", label:"修复草稿", key:"repairs" },
+  { id:"patterns", label:"模式候选", key:"patterns" },
+  { id:"workspaces", label:"工作区", key:"workspaces" }
+];
+const TITLES = { memories:"记忆", skills:"技能", goals:"目标", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", workspaces:"工作区" };
+function tierBadge(t, label){ return '<span class="tag t-' + t + '">' + esc(label || t) + "</span>"; }
+function statusBadge(s, label){ return '<span class="tag s-' + s + '">' + esc(label || s) + "</span>"; }
 function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
 function memRow(m){
   const id = m.uuid || m.id;
-  const tag = tierClass(m.tier) + zh(TIER_ZH, m.tier);
+  const tag = tierBadge(m.tier, zh(TIER_ZH, m.tier, m.tier));
   const act = '<span class=act><button onclick="editMem(' + "'" + id + "'" + ')">编辑</button><button class=del onclick="delMem(' + "'" + id + "'" + ')">删除</button></span>';
-  return "<tr><td>" + tag + m.strength + "</td><td>" + esc(m.content) + "</td><td class=muted>" + esc(m.scope || "") + "</td><td class=muted>" + esc((m.created_at || "").slice(0,10)) + "</td><td class=muted>" + act + "</td></tr>";
+  return "<tr><td>" + tag + "<span class=st>强度 " + m.strength + "</span></td><td class=content-cell>" + esc(m.content) + "</td><td class=muted>" + esc(m.scope || "") + "</td><td class=muted>" + esc((m.created_at || "").slice(0,10)) + "</td><td>" + act + "</td></tr>";
 }
 let editingId = null;
 async function editMem(id){
@@ -502,39 +565,54 @@ async function delMem(id){
 }
 window.delMem = delMem;
 let memoriesById = {};
+let activeTab = "memories";
+function switchTab(id){
+  activeTab = id;
+  document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.id === "pane-" + id));
+  document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === id));
+  document.getElementById("tabTitle").textContent = TITLES[id] || id;
+}
 async function boot(){
-  const [dash, memories, skills, goals, repairs, patterns, daily] = await Promise.all([
+  const [dash, memories, skills, goals, repairs, patterns, daily, workspaces] = await Promise.all([
     get("/api/dashboard"), get("/api/memories"), get("/api/skills"), get("/api/goals"), get("/api/repairs"), get("/api/patterns"),
-    rpc("memory.daily", { limit: 14 })
+    rpc("memory.daily", { limit: 14 }), get("/api/workspaces")
   ]);
   memoriesById = {};
   for (const m of memories) memoriesById[m.uuid || m.id] = m;
   const st = dash.status;
   document.getElementById("sub").textContent = "节点 " + st.node_id + " · 时钟 " + st.clock + " · " + (st.home || st.db_path);
   const counts = dash.counts;
-  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh({ memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", observations:"观测", repairs:"修复", patterns:"模式", workspaces:"工作区" }, k, k) + "</span></div>").join("");
+  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh(COUNT_ZH, k, k) + "</span></div>").join("");
+  const nav = document.getElementById("nav");
+  nav.innerHTML = TABS.map((t) => {
+    const n = t.key === "daily" ? (daily ? daily.length : 0) : (t.key ? (counts[t.key] ?? 0) : "");
+    return '<button data-tab="' + t.id + '"' + (t.id === activeTab ? ' class=active' : '') + '><span>' + t.label + "</span>" + (t.key ? "<span class=cnt>" + n + "</span>" : "") + "</button>";
+  }).join("");
+  nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => switchTab(b.getAttribute("data-tab"))));
   const memBox = document.getElementById("memories");
   if (!memories.length) memBox.innerHTML = '<div class="empty">暂无记忆</div>';
   else {
-    let h = "<table><tr><th>强度</th><th>内容</th><th>作用域</th><th>时间</th><th>操作</th></tr>";
+    let h = "<div class=table-wrap><table><tr><th>强度</th><th>内容</th><th>作用域</th><th>时间</th><th>操作</th></tr>";
     for (const m of memories) h += memRow(m);
-    memBox.innerHTML = h + "</table>";
+    memBox.innerHTML = h + "</table></div>";
   }
   const dlBox = document.getElementById("daily");
   dlBox.innerHTML = daily && daily.length ? daily.map((d) => "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条要点</div><ul>" + d.facts.map((f) => "<li>" + esc(f) + "</li>").join("") + "</ul></div>").join("") : '<div class="empty">暂无总结</div>';
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
   else {
-    let h = "<table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th></tr>";
-    for (const s of skills) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusClass(s.status) + zh(STATUS_ZH, s.status) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td></tr>";
-    skBox.innerHTML = h + "</table>";
+    let h = "<div class=table-wrap><table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th></tr>";
+    for (const s of skills) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td></tr>";
+    skBox.innerHTML = h + "</table></div>";
   }
   const goBox = document.getElementById("goals");
-  goBox.innerHTML = goals.length ? "<table><tr><th>目标</th><th>状态</th><th>项目</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(zh(GOAL_ZH, g.status, g.status)) + "</td><td class=muted>" + esc(g.project || "") + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无目标</div>';
+  goBox.innerHTML = goals.length ? "<div class=table-wrap><table><tr><th>目标</th><th>状态</th><th>项目</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(zh(GOAL_ZH, g.status, g.status)) + "</td><td class=muted>" + esc(g.project || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无目标</div>';
   const rpBox = document.getElementById("repairs");
-  rpBox.innerHTML = repairs.length ? "<table><tr><th>类型</th><th>触发</th><th>草稿</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(zh(REPAIR_ZH, r.kind, r.kind)) + "</td><td class=muted>" + esc(zh(REPAIR_ZH, r.trigger, r.trigger)) + "</td><td>" + esc(r.draft) + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无</div>';
+  rpBox.innerHTML = repairs.length ? "<div class=table-wrap><table><tr><th>类型</th><th>触发</th><th>草稿</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(zh(REPAIR_ZH, r.kind, r.kind)) + "</td><td class=muted>" + esc(zh(REPAIR_ZH, r.trigger, r.trigger)) + "</td><td>" + esc(r.draft) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无</div>';
   const ptBox = document.getElementById("patterns");
-  ptBox.innerHTML = patterns.length ? "<table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无成熟候选</div>';
+  ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
+  const wsBox = document.getElementById("workspaces");
+  wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
 }
 boot().catch(e => document.body.insertAdjacentHTML("beforeend", "<pre>" + esc(e.stack) + "</pre>"));
 </script>
