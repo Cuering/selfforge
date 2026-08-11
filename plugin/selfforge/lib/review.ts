@@ -71,7 +71,7 @@ export function spawnReview(
     const file = join(REVIEWS_DIR, `review-${Date.now()}.md`)
     mkdirSync(REVIEWS_DIR, { recursive: true })
     writeFileSync(file, reviewMd)
-    logObs("review_spawned", { file }, project)
+    logObs("review_spawned", { file, mode: "cli" }, project)
     const args = [reviewMd, "--agent", "evolve-reviewer", "--title", "evolve review"]
     const { spawn } = require("node:child_process")
     const child = spawn(wrapper, args, {
@@ -81,6 +81,51 @@ export function spawnReview(
     })
     child.unref()
     return { spawned: true, file }
+  } catch (err) {
+    const fallback = join(EVOLVE_HOME, `review-failed-${Date.now()}.md`)
+    try {
+      writeFileSync(fallback, formatReview(messages, project))
+    } catch {}
+    return { spawned: false, error: (err as Error).message, fallback }
+  }
+}
+
+/**
+ * Spawn a review sub-session inside the running opencode server, using the
+ * evolve-reviewer agent. This is the desktop-friendly path: no external CLI
+ * binary is needed (the npm opencode CLI may be missing/broken), and the review
+ * agent runs as a normal child session that can use the selfforge tools.
+ *
+ * `onSession` is invoked with the created review session id so the caller can
+ * mark it and skip re-triggering review on its own messages.
+ */
+export async function spawnReviewSdk(
+  client: any,
+  messages: Array<{ role: string; content: string }>,
+  project: string,
+  onSession?: (sessionId: string) => void
+): Promise<{ spawned: boolean; file?: string; session?: string; error?: string; fallback?: string }> {
+  try {
+    const reviewMd = formatReview(messages, project)
+    const file = join(REVIEWS_DIR, `review-${Date.now()}.md`)
+    mkdirSync(REVIEWS_DIR, { recursive: true })
+    writeFileSync(file, reviewMd)
+    logObs("review_spawned", { file, mode: "sdk" }, project)
+    if (!client?.session?.create || !client?.session?.promptAsync) {
+      throw new Error("SDK session API unavailable")
+    }
+    const session = await client.session.create({ body: { title: "evolve review" } })
+    const sid: string = session?.id
+    if (!sid) throw new Error("no session id returned")
+    if (onSession) onSession(sid)
+    await client.session.promptAsync({
+      path: { id: sid },
+      body: {
+        agent: "evolve-reviewer",
+        parts: [{ type: "text", text: reviewMd }],
+      },
+    })
+    return { spawned: true, file, session: sid }
   } catch (err) {
     const fallback = join(EVOLVE_HOME, `review-failed-${Date.now()}.md`)
     try {

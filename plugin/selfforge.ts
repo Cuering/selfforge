@@ -4,7 +4,7 @@ import { memoryDecay, composeMemoryContext } from "./selfforge/lib/memory"
 import { syncSkillsToDisk, recordSkillUse } from "./selfforge/lib/skills"
 import { goalAdvisory, maintainCheckpoints } from "./selfforge/lib/goals"
 import { evolutionAdvisory } from "./selfforge/lib/evolution"
-import { redact, truncate, spawnReview, getSession, sessionSet, bufferPush, isTrivial } from "./selfforge/lib/review"
+import { redact, truncate, spawnReview, spawnReviewSdk, getSession, sessionSet, bufferPush, isTrivial } from "./selfforge/lib/review"
 import { memoryTools } from "./selfforge/lib/tools/memory"
 import { userTools } from "./selfforge/lib/tools/user"
 import { skillTools } from "./selfforge/lib/tools/skills"
@@ -92,6 +92,14 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
 
   const REVIEW_HEADING = "# Autolearn Review"
 
+  // IDs of review sub-sessions we spawned via the SDK. Their own messages must
+  // not re-trigger a review (infinite loop guard).
+  const reviewSessionIDs = new Set<string>()
+
+  function isReviewSession(sid: string): boolean {
+    return reviewSessionIDs.has(sid)
+  }
+
   function maybeSpawnReview(sessionId: string, reason: string) {
     if (reviewInProgress) return
     const s = getSession(sessionId)
@@ -108,14 +116,31 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     }
     reviewInProgress = true
     const captured = [...buf]
-    const res = spawnReview(captured, s.project || projectName(), reviewCmd())
-    sessionSet(sessionId, { buffer: "[]", last_review_turn: s.turn_count })
-    // Feature 1: distill the consumed buffer into a fixed-size session state
-    try {
-      summarizeSession(sessionId, captured, s.turn_count)
-      logObs("session_summary_built", { session: sessionId, facts: getSessionSummary(sessionId)?.fact_count ?? 0 }, s.project || projectName())
-    } catch {}
-    logObs("review_triggered", { reason, result: res }, s.project || projectName())
+    // Prefer the in-process SDK path (works on desktop where the npm CLI binary
+    // is broken/missing and in the CLI), falling back to a detached CLI spawn.
+    const res = spawnReviewSdk(client, captured, s.project || projectName(), (sid) =>
+      reviewSessionIDs.add(sid)
+    )
+    void res.then((r) => {
+      if (!r.spawned) {
+        const legacy = spawnReview(captured, s.project || projectName(), reviewCmd())
+        logObs("review_fallback_cli", { ok: legacy.spawned, error: legacy.error }, s.project || projectName())
+      }
+      sessionSet(sessionId, { buffer: "[]", last_review_turn: s.turn_count })
+      // Feature 1: distill the consumed buffer into a fixed-size session state
+      let facts = 0
+      try {
+        summarizeSession(sessionId, captured, s.turn_count)
+        facts = getSessionSummary(sessionId)?.fact_count ?? 0
+      } catch {}
+      // Single consolidated observation per trigger (was 3 noisy rows: review_spawned,
+      // session_summary_built, review_triggered).
+      logObs(
+        "review_triggered",
+        { reason, result: r, session: sessionId, summary_facts: facts },
+        s.project || projectName()
+      )
+    })
     setTimeout(() => {
       reviewInProgress = false
     }, 10000)
@@ -131,6 +156,8 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
             const info = props.info || {}
             const sid = info.id || props.sessionID
             if (sid) {
+              // Skip bookkeeping for our own review sub-sessions.
+              if (isReviewSession(sid)) break
               getSession(sid)
               sessionSet(sid, { project: projectName() })
               logObs("session_created", { session: sid }, projectName())
@@ -143,11 +170,16 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
             const msgId = info.id
             const role = info.role
             if (!msgId || !role) break
+            const sid = (info.sessionID as string) || (info.sessionId as string) || ""
+            if (!sid) break
+            // Skip buffering/tracking for our own review sub-sessions.
+            if (isReviewSession(sid)) {
+              messageTexts.delete(msgId)
+              break
+            }
             messageRoles.set(msgId, role)
             const text = messageTexts.get(msgId) || ""
             if (text && role === "assistant") {
-              const sid = (info.sessionID as string) || (info.sessionId as string) || ""
-              if (!sid) break
               const s = getSession(sid)
               if (isTrivial(text)) break
               const buf = bufferPush(s, {
@@ -159,8 +191,6 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
                 maybeSpawnReview(sid, "threshold")
               }
             } else if (text && role === "user") {
-              const sid = (info.sessionID as string) || (info.sessionId as string) || ""
-              if (!sid) break
               const s = getSession(sid)
               if (isTrivial(text)) break
               const buf = bufferPush(s, {
@@ -172,7 +202,6 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
             messageTexts.delete(msgId)
             break
           }
-
           case "message.part.updated": {
             const part = props.part || {}
             const msgId = part.messageID
@@ -194,6 +223,11 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
           case "session.idle": {
             const sid = (props.sessionID as string) || (props.sessionId as string) || ""
             if (!sid) break
+            // Never housekeep/auto-distill our own review sub-sessions.
+            if (isReviewSession(sid)) {
+              reviewSessionIDs.delete(sid)
+              break
+            }
             const nowMs = Date.now()
             // housekeeping: decay stale memories periodically
             try {
