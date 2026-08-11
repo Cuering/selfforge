@@ -135,7 +135,7 @@ export function goalStatus(goalId?: number) {
     return { ...g, checkpoints: goalCheckpoints(goalId) }
   }
   const goals = getDb()
-    .query("SELECT * FROM goals WHERE status = 'active' ORDER BY updated_at DESC LIMIT 10")
+    .query("SELECT * FROM goals WHERE deleted = 0 AND status = 'active' ORDER BY updated_at DESC LIMIT 10")
     .all() as Goal[]
   return goals.map((g) => ({ ...g, checkpoints: goalCheckpoints(g.id) }))
 }
@@ -152,7 +152,7 @@ export function goalStop(goalId: number) {
 
 export function goalAdvisory(): string | null {
   const goals = getDb()
-    .query("SELECT * FROM goals WHERE status = 'active' ORDER BY updated_at DESC LIMIT 3")
+    .query("SELECT * FROM goals WHERE deleted = 0 AND status = 'active' ORDER BY updated_at DESC LIMIT 3")
     .all() as Goal[]
   if (goals.length === 0) return null
   return goals
@@ -181,10 +181,10 @@ export function maintainCheckpoints(): { removed: number; remaining_active: numb
     .query("UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND status = 'done'")
     .run(ts)
 
-  // 2. Checkpoints belonging to goals that are no longer active.
+  // 2. Checkpoints belonging to goals that are no longer active (or were deleted).
   const orphaned = db
     .query(
-      "UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE status != 'active')"
+      "UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE deleted = 1 OR status != 'active')"
     )
     .run(ts)
 

@@ -486,7 +486,7 @@ function apiSkills() {
 
 function apiRepairs() {
   const rows = getDb()
-    .query("SELECT * FROM repairs WHERE status NOT IN ('accepted','rejected') ORDER BY created_at DESC LIMIT 50")
+    .query("SELECT * FROM repairs WHERE deleted = 0 AND status NOT IN ('accepted','rejected') ORDER BY created_at DESC LIMIT 50")
     .all() as Array<{ uuid: string | null; kind: string; trigger: string; scope: string | null; draft: string; status: string; created_at: string }>
   return rows.map((r) => ({ id: r.uuid, kind: r.kind, trigger: r.trigger, scope: r.scope, draft: r.draft, status: r.status, created_at: r.created_at }))
 }

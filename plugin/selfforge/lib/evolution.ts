@@ -21,7 +21,7 @@ export function evolutionCandidates(opts?: { minUse?: number; minFail?: number }
   const db = getDb()
   const skills = db
     .query(
-      "SELECT * FROM skills WHERE status = 'active' AND usage_count >= ? AND fail_count >= ?"
+      "SELECT * FROM skills WHERE deleted = 0 AND status = 'active' AND usage_count >= ? AND fail_count >= ?"
     )
     .all(minUse, minFail) as Skill[]
   return skills.map((s) => ({
@@ -29,7 +29,7 @@ export function evolutionCandidates(opts?: { minUse?: number; minFail?: number }
     usage: s.usage_count,
     fails: s.fail_count,
     hasPendingCandidate: !!db
-      .query("SELECT id FROM evolution WHERE skill_id = ? AND status = 'pending'")
+      .query("SELECT id FROM evolution WHERE deleted = 0 AND skill_id = ? AND status = 'pending'")
       .get(s.id),
   }))
 }
@@ -48,11 +48,15 @@ export function evolutionPropose(opts: { skill: string; strategy: string; candid
 }
 
 export function evolutionList(opts?: { status?: string }) {
-  const where = opts?.status ? "WHERE e.status = ?" : ""
-  const params = opts?.status ? [opts.status] : []
+  const where = ["e.deleted = 0"]
+  const params: string[] = []
+  if (opts?.status) {
+    where.push("e.status = ?")
+    params.push(opts.status)
+  }
   return getDb()
     .query(
-      `SELECT e.*, s.name AS skill_name FROM evolution e JOIN skills s ON s.id = e.skill_id ${where} ORDER BY e.created_at DESC LIMIT 50`
+      `SELECT e.*, s.name AS skill_name FROM evolution e JOIN skills s ON s.id = e.skill_id WHERE ${where.join(" AND ")} ORDER BY e.created_at DESC LIMIT 50`
     )
     .all(...params) as Array<Evolution & { skill_name: string }>
 }
@@ -60,10 +64,10 @@ export function evolutionList(opts?: { status?: string }) {
 export function evolutionStatus() {
   const db = getDb()
   const pending = db
-    .query("SELECT COUNT(*) AS n FROM evolution WHERE status = 'pending'")
+    .query("SELECT COUNT(*) AS n FROM evolution WHERE deleted = 0 AND status = 'pending'")
     .get() as { n: number }
   const applied = db
-    .query("SELECT COUNT(*) AS n FROM evolution WHERE status = 'applied'")
+    .query("SELECT COUNT(*) AS n FROM evolution WHERE deleted = 0 AND status = 'applied'")
     .get() as { n: number }
   return {
     pending: pending.n,
@@ -115,7 +119,7 @@ export function evolutionCriteria(max: number = 3): Array<{ strategy: string; sk
     .query(
       `SELECT e.strategy, e.created_at, s.name AS skill_name
        FROM evolution e JOIN skills s ON s.id = e.skill_id
-       WHERE e.status IN ('applied', 'pending')
+       WHERE e.deleted = 0 AND e.status IN ('applied', 'pending')
        ORDER BY e.created_at DESC LIMIT ?`
     )
     .all(max) as Array<{ strategy: string; created_at: string; skill_name: string }>
