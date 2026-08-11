@@ -96,3 +96,39 @@ describe("fingerprint-scoped retrieval", () => {
     for (const m of [other, scoped]) getDb().query("DELETE FROM memories WHERE id = ?").run(m.id)
   })
 })
+
+describe("workspace de-dup / merge", () => {
+  it("normalizePath unifies separators, trailing slash and case", async () => {
+    const { normalizePath } = await import("../plugin/selfforge/lib/workspace")
+    if (process.platform === "win32") {
+      expect(normalizePath("D:/opencode")).toBe("d:\\opencode")
+      expect(normalizePath("D:\\opencode\\")).toBe("d:\\opencode")
+      expect(normalizePath("D:\\Opencode")).toBe("d:\\opencode")
+      expect(normalizePath("C:")).toBe("c:\\")
+    } else {
+      expect(normalizePath("/a/b/")).toBe("/a/b")
+    }
+  })
+
+  it("mergeDuplicateWorkspaces folds duplicate rows for the same directory into one keeper", async () => {
+    const { getDb } = await import("../plugin/selfforge/lib/db")
+    const { mergeDuplicateWorkspaces, workspaceList } = await import("../plugin/selfforge/lib/workspace")
+    const db = getDb()
+    // simulate the same dir recorded under different separators
+    const rows = db
+      .query("INSERT INTO workspaces (uuid, origin, path, name, fingerprint, scope, visits, first_seen, last_seen) VALUES ('m1', 'n', ?, 'proj', 'fp', 'ws:proj:fp', 2, '2026-01-01', '2026-01-01')")
+      .run("D:/my/proj")
+    const rows2 = db
+      .query("INSERT INTO workspaces (uuid, origin, path, name, fingerprint, scope, visits, first_seen, last_seen) VALUES ('m2', 'n', ?, 'proj', 'fp', 'ws:proj:fp', 5, '2026-01-01', '2026-01-03')")
+      .run("D:\\my\\proj\\")
+    const res = mergeDuplicateWorkspaces()
+    expect(res.merged).toBeGreaterThanOrEqual(1)
+    const active = workspaceList()
+    // both rows must collapse to a single active workspace
+    expect(active.filter((w) => w.path.toLowerCase().includes("my") && w.path.toLowerCase().includes("proj")).length).toBe(1)
+    const keeper = active.find((w) => w.path.replace(/[\\/]/g, "\\").toLowerCase() === "d:\\my\\proj")
+    expect(keeper).toBeTruthy()
+    expect(keeper!.visits).toBe(7)
+    expect(keeper!.last_seen).toBe("2026-01-03")
+  })
+})

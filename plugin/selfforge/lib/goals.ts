@@ -163,3 +163,49 @@ export function goalAdvisory(): string | null {
     })
     .join("\n")
 }
+
+/**
+ * Checkpoint housekeeping (run on idle / periodically):
+ *  - "done" checkpoints are no longer needed once the goal advances → soft-delete.
+ *  - Pending checkpoints on goals that are no longer active (completed/stopped)
+ *    have no purpose → soft-delete.
+ *  - Pending checkpoints on active goals are kept — they are the actionable
+ *    next steps, driven by goal_checkpoint.
+ */
+export function maintainCheckpoints(): { removed: number; remaining_active: number; remaining_pending: number } {
+  const db = getDb()
+  const ts = now()
+
+  // 1. Completed checkpoints: remove (goal progress is captured in status already).
+  const done = db
+    .query("UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND status = 'done'")
+    .run(ts)
+
+  // 2. Checkpoints belonging to goals that are no longer active.
+  const orphaned = db
+    .query(
+      "UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE status != 'active')"
+    )
+    .run(ts)
+
+  // 3. Active goals that have already reached their max iterations: their
+  //    remaining pending checkpoints are not actionable either.
+  const exhausted = db
+    .query(
+      "UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE status = 'active' AND iteration >= max_iterations)"
+    )
+    .run(ts)
+
+  const removed = Number(done.changes) + Number(orphaned.changes) + Number(exhausted.changes)
+  const remaining_active = (
+    db
+      .query(
+        "SELECT COUNT(*) AS n FROM checkpoints c JOIN goals g ON g.id = c.goal_id WHERE c.deleted = 0 AND g.status = 'active'"
+      )
+      .get() as { n: number }
+  ).n
+  const remaining_pending = (
+    db.query("SELECT COUNT(*) AS n FROM checkpoints WHERE deleted = 0 AND status = 'pending'").get() as { n: number }
+  ).n
+  return { removed, remaining_active, remaining_pending }
+}

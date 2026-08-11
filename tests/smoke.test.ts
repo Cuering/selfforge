@@ -148,6 +148,29 @@ test("goal lifecycle CP0 -> complete", async () => {
   expect(g.goalStatus(start.id).status).toBe("completed")
 })
 
+test("maintainCheckpoints prunes done + orphaned checkpoints, keeps actionable pending", async () => {
+  const g = (await import("../plugin/selfforge/lib/goals")) as typeof import("../plugin/selfforge/lib/goals")
+  const active = g.goalStart({ goal: "keep this", northStar: "n", completionCriteria: "c" })
+  // mark CP0 done + CP0.5 pending on the active goal
+  g.goalCheckpoint({ goalId: active.id, cp: "CP0", status: "done" })
+  g.goalCheckpoint({ goalId: active.id, cp: "CP0.5", status: "done" })
+  g.goalCheckpoint({ goalId: active.id, cp: "CP1", status: "pending" })
+  const done = g.goalStart({ goal: "finish this", northStar: "n", completionCriteria: "c" })
+  g.goalCheckpoint({ goalId: done.id, cp: "CP0", status: "done" })
+  g.goalComplete(done.id)
+
+  const res = g.maintainCheckpoints()
+  expect(res.removed).toBeGreaterThanOrEqual(2) // active goal's done CPs + completed goal's CPs
+
+  const activeCps = g.goalCheckpoints(active.id)
+  // done CPs should be gone; pending CP1 must survive
+  expect(activeCps.find((c) => c.cp === "CP1" && c.deleted === 0)).toBeTruthy()
+  expect(activeCps.filter((c) => c.deleted === 0 && c.status === "done").length).toBe(0)
+  // completed goal's checkpoints are all gone
+  const goneCps = g.goalCheckpoints(done.id)
+  expect(goneCps.filter((c) => c.deleted === 0).length).toBe(0)
+})
+
 test("rule observe -> escalate dryRun", async () => {
   const rl = (await import("../plugin/selfforge/lib/rules")) as typeof import("../plugin/selfforge/lib/rules")
   const observed = rl.ruleObserve({ rule: "always use spaces not tabs", domain: "code-style" })

@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { dashboardText, serve, closeServer } from "../rpc"
+import { dashboardText, ensureDashboard, stopDashboard } from "../rpc"
 import { exec } from "node:child_process"
 
 function openBrowser(url: string) {
@@ -26,12 +26,12 @@ export const dashboardTools = {
 
   selfforge_dashboard: tool({
     description:
-      "Ensure the selfforge web dashboard server is running on localhost, then optionally open it in the default browser. Returns the dashboard URL. Use when the user wants the visual dashboard or a browser view of the memory store.",
+      "Ensure the selfforge web dashboard server is running on localhost (stable detached daemon), then optionally open it in the default browser. Returns the dashboard URL. Use when the user wants the visual dashboard or a browser view of the memory store.",
     args: {
       open: tool.schema.boolean().optional().describe("Open the dashboard in the default browser (default true)"),
     },
     async execute(args) {
-      const port = await serve(9210)
+      const { port } = await ensureDashboard(9210)
       const url = `http://127.0.0.1:${port}/`
       if (args.open !== false) openBrowser(url)
       return { output: JSON.stringify({ ok: true, url, note: "run /selfforge for a terminal overview" }, null, 2) }
@@ -39,11 +39,11 @@ export const dashboardTools = {
   }),
 
   selfforge_dashboard_stop: tool({
-    description: "Stop the selfforge dashboard server if running (idempotent).",
+    description: "Stop the selfforge dashboard daemon/server if running (idempotent).",
     args: {},
     async execute() {
-      closeServer()
-      return { output: JSON.stringify({ ok: true }) }
+      const r = await stopDashboard()
+      return { output: JSON.stringify({ ok: r.ok }) }
     },
   }),
 }

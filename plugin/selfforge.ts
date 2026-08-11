@@ -2,7 +2,7 @@
 import { initDb, getConfig, logObs, closeDb, vacuumDb } from "./selfforge/lib/db"
 import { memoryDecay, composeMemoryContext } from "./selfforge/lib/memory"
 import { syncSkillsToDisk, recordSkillUse } from "./selfforge/lib/skills"
-import { goalAdvisory } from "./selfforge/lib/goals"
+import { goalAdvisory, maintainCheckpoints } from "./selfforge/lib/goals"
 import { evolutionAdvisory } from "./selfforge/lib/evolution"
 import { redact, truncate, spawnReview, getSession, sessionSet, bufferPush, isTrivial } from "./selfforge/lib/review"
 import { memoryTools } from "./selfforge/lib/tools/memory"
@@ -21,9 +21,9 @@ import { transferTools } from "./selfforge/lib/tools/transfer"
 import { teamTools } from "./selfforge/lib/tools/team"
 import { dashboardTools } from "./selfforge/lib/tools/dashboard"
 import { recordSignal } from "./selfforge/lib/repair"
-import { touchWorkspace, scopeFor, fingerprintOf } from "./selfforge/lib/workspace"
+import { touchWorkspace, scopeFor, fingerprintOf, mergeDuplicateWorkspaces } from "./selfforge/lib/workspace"
 import { summarizeSession, getSessionSummary } from "./selfforge/lib/summary"
-import { serve, closeServer } from "./selfforge/lib/rpc"
+import { closeServer, ensureDashboard } from "./selfforge/lib/rpc"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -48,11 +48,14 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     memoryDecay()
   } catch {}
 
-  // Feature: auto-start the local dashboard/RPC server in the background so the
-  // browser dashboard and /selfforge command always have a live endpoint.
-  try {
-    void serve(9210)
-  } catch {}
+  // Feature: ensure the dashboard is served by a stable detached daemon so the
+  // browser dashboard and /selfforge command always have a live endpoint, even
+  // across opencode restarts and background data writes.
+  if (process.env.SELFFORGE_NO_DAEMON !== "1") {
+    try {
+      void ensureDashboard(9210)
+    } catch {}
+  }
 
   const threshold = () => Number(getConfig("review_threshold", "5"))
   const idleCooldown = () => Number(getConfig("idle_cooldown_ms", "300000"))
@@ -196,6 +199,14 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
             try {
               if (nowMs - lastMaintenance >= maintenanceInterval()) {
                 memoryDecay()
+                lastMaintenance = nowMs
+              }
+            } catch {}
+            // housekeeping: dedupe workspaces + prune done/useless checkpoints
+            try {
+              if (nowMs - lastMaintenance >= maintenanceInterval()) {
+                mergeDuplicateWorkspaces()
+                maintainCheckpoints()
                 lastMaintenance = nowMs
               }
             } catch {}

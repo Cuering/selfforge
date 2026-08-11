@@ -1,12 +1,16 @@
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { getDb, nodeId, clock, advanceClockTo, logObs, now } from "./db"
+import { spawn } from "node:child_process"
+import { readFileSync, existsSync, unlinkSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import { getDb, nodeId, clock, advanceClockTo, logObs, now, EVOLVE_HOME } from "./db"
 import { exportSnapshot, importSnapshot, transferStatus, SNAPSHOT_FORMAT } from "./transfer"
 import { memoryList, memoryUpdateById, memoryArchiveById, memoryAdd } from "./memory"
 import { dailySummaries, summarizeSession, sessionSummaryList } from "./summary"
 import { skillCreate, skillList, skillStatus, skillArchive, skillPatch } from "./skills"
-import { workspaceList } from "./workspace"
-import { goalStatus, goalStart } from "./goals"
+import { workspaceList, mergeDuplicateWorkspaces } from "./workspace"
+import { goalStatus, goalStart, maintainCheckpoints } from "./goals"
 import { ruleObserve, ruleStatus } from "./rules"
 import { evolutionPropose, evolutionList } from "./evolution"
 import { patternCandidates, recordPattern } from "./patterns"
@@ -139,6 +143,29 @@ async function handle(method: string, params: any): Promise<any> {
       if (!params?.tool) throw new Error("params.tool required")
       return recordPattern(String(params.tool), params.errCode ? String(params.errCode) : undefined, params.context ? String(params.context) : undefined, params.episodeKey ? String(params.episodeKey) : undefined)
     }
+    case "workspace.open": {
+      if (!params?.id) throw new Error("params.id required")
+      const ws = getDb()
+        .query("SELECT * FROM workspaces WHERE id = ? AND deleted = 0")
+        .get(resolveRowId("workspaces", params.id)) as { path: string } | undefined
+      if (!ws || !ws.path) throw new Error("workspace not found")
+      const { existsSync } = require("node:fs")
+      if (!existsSync(ws.path)) throw new Error(`path does not exist: ${ws.path}`)
+      // Open the folder in the OS file manager (Windows explorer / macOS open / Linux xdg-open).
+      const opener = process.platform === "win32" ? "explorer" : process.platform === "darwin" ? "open" : "xdg-open"
+      const child = spawn(opener, process.platform === "win32" ? [ws.path] : [ws.path], {
+        detached: true,
+        stdio: "ignore",
+      })
+      child.unref()
+      return { ok: true, path: ws.path }
+    }
+    case "workspace.merge": {
+      return mergeDuplicateWorkspaces()
+    }
+    case "checkpoints.maintain": {
+      return maintainCheckpoints()
+    }
     case "data.update": {
       const updated = updateRow(params?.kind, params?.id, params)
       return { ok: updated.ok, message: updated.message }
@@ -259,6 +286,124 @@ export function closeServer(): void {
     } catch {}
     activeServer = null
   }
+}
+
+/**
+ * Stable dashboard supervision. The dashboard is served by a *detached daemon
+ * process* that survives opencode restarts (the plugin used to serve in-process,
+ * so the port died on exit and drifted upward on EADDRINUSE). The supervisor:
+ *  1. probes the desired port with GET /api/ping
+ *  2. if nothing answers, spawns a detached child running serve-daemon.js
+ *  3. waits for it to come up, then returns the bound port
+ *  4. falls back to an in-process server only if the daemon cannot be spawned
+ */
+const DAEMON_STATE_FILE = join(EVOLVE_HOME, "dashboard.json")
+
+function readDaemonState(): { port?: number; pid?: number; started_at?: string } | null {
+  try {
+    return JSON.parse(readFileSync(DAEMON_STATE_FILE, "utf8")) as { port?: number; pid?: number; started_at?: string }
+  } catch {
+    return null
+  }
+}
+
+async function pingPort(port: number, timeoutMs = 700): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const { get } = require("node:http")
+      const r = get(
+        { host: "127.0.0.1", port, path: "/api/ping", timeout: timeoutMs },
+        (res: import("node:http").IncomingMessage) => {
+          res.resume()
+          resolve(res.statusCode === 200)
+        }
+      )
+      r.on("error", () => resolve(false))
+      r.on("timeout", () => {
+        r.destroy()
+        resolve(false)
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
+function daemonEntryCandidates(): string[] {
+  const here = dirname(fileURLToPath(import.meta.url))
+  return [
+    // deployed (compiled bundle): compiled/serve-daemon.js sits next to the plugin
+    join(here, "serve-daemon.js"),
+    join(here, "..", "serve-daemon.js"),
+    // source layouts: lib/rpc.ts -> selfforge/serve-daemon.ts (repo & installed plugins/)
+    join(here, "..", "serve-daemon.ts"),
+    join(here, "..", "..", "serve-daemon.ts"),
+  ]
+}
+
+function resolveDaemonEntry(): string | null {
+  for (const c of daemonEntryCandidates()) {
+    try {
+      if (existsSync(c)) return c
+    } catch {}
+  }
+  return null
+}
+
+/** Spawn the detached daemon. Returns the child or null if it cannot start. */
+function spawnDaemon(port: number): ReturnType<typeof spawn> | null {
+  const entry = resolveDaemonEntry()
+  if (!entry) return null
+  // Use the same runtime that is hosting the plugin (Node on desktop, Bun on CLI).
+  const env: Record<string, string> = { ...process.env, SELFFORGE_PORT: String(port), EVOLVE_HOME }
+  // ELECTRON_RUN_AS_NODE makes an Electron binary (opencode desktop) run the
+  // script as plain Node; plain node/bun ignore the variable, so it is safe to
+  // always set.
+  env.ELECTRON_RUN_AS_NODE = "1"
+  const child = spawn(process.execPath, [entry], {
+    detached: true,
+    stdio: "ignore",
+    env,
+  })
+  child.unref()
+  return child
+}
+
+export async function ensureDashboard(port = 9210): Promise<{ port: number; daemon: boolean }> {
+  // Already running in-process (CLI `selfforge serve` or previous fallback).
+  if (activeServer) return { port: activeServerPort() || port, daemon: false }
+  // Reuse a live daemon: try the requested port, then the recorded daemon port.
+  if (await pingPort(port)) return { port, daemon: true }
+  const state = readDaemonState()
+  if (state?.port && state.port !== port && (await pingPort(state.port))) return { port: state.port, daemon: true }
+  // Spawn a detached daemon.
+  const child = spawnDaemon(port)
+  if (child) {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150))
+      if (await pingPort(port)) return { port, daemon: true }
+      const st = readDaemonState()
+      if (st?.port && (await pingPort(st.port))) return { port: st.port, daemon: true }
+    }
+  }
+  // Fallback: serve in-process (daemon could not be spawned / started).
+  const actual = await serve(port)
+  return { port: actual, daemon: false }
+}
+
+/** Stop the dashboard: kills the detached daemon (and any in-process server). */
+export async function stopDashboard(): Promise<{ ok: boolean }> {
+  const state = readDaemonState()
+  if (state?.pid && state.pid !== process.pid) {
+    try {
+      process.kill(state.pid)
+    } catch {}
+  }
+  closeServer()
+  try {
+    unlinkSync(DAEMON_STATE_FILE)
+  } catch {}
+  return { ok: true }
 }
 
 /** Plain-text overview of the engine, rendered from the same data as the JSON APIs. */
@@ -538,6 +683,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, url: strin
     return
   }
   if (route === "/api/status") return json(res, apiStatus())
+  if (route === "/api/ping") return json(res, { pong: true, pid: process.pid, port: activeServerPort() })
   if (route === "/api/dashboard") return json(res, apiDashboard())
   if (route === "/api/memories") return json(res, apiMemories())
   if (route === "/api/skills") return json(res, apiSkills())
@@ -892,6 +1038,14 @@ async function delRow(kind, id, label){
     alert(e.message);
   }
 }
+async function openDir(id){
+  try {
+    const res = await rpc("workspace.open", { id });
+    if (!res.ok) alert("无法打开目录");
+  } catch (e) {
+    alert(e.message);
+  }
+}
 function rowAct(kind, id, label, current){
   const field = KIND_EDIT_FIELD[kind];
   return '<span class=act><button onclick="editRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(current || "") + "'" + ',' + "'" + (field || "") + "'" + ')">编辑</button><button class=del onclick="delRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(label || "") + "'" + ')">删除</button></span>';
@@ -923,6 +1077,9 @@ async function distillNow(){
   }
 }
 async function boot(){
+  // housekeeping before rendering: merge duplicate workspaces, prune done/useless checkpoints
+  try { await rpc("workspace.merge", {}); } catch (e) {}
+  try { await rpc("checkpoints.maintain", {}); } catch (e) {}
   const [dash, memories, skills, goals, repairs, patterns, daily, workspaces, rules, checkpoints, evolution] = await Promise.all([
     get("/api/dashboard"), get("/api/memories"), get("/api/skills"), get("/api/goals"), get("/api/repairs"), get("/api/patterns"),
     rpc("memory.daily", { limit: 14 }), get("/api/workspaces"), get("/api/rules"), get("/api/checkpoints"), get("/api/evolution")
@@ -963,7 +1120,7 @@ async function boot(){
   const ptBox = document.getElementById("patterns");
   ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th><th>操作</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td><td>" + rowAct("patterns", p.id, "模式", p.sig) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
   const wsBox = document.getElementById("workspaces");
-  wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th><th>操作</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td><td>" + rowAct("workspaces", w.id, w.name, w.name) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
+  wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th><th>操作</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td><td>" + '<span class=act><button class="open-dir" onclick="openDir(' + "'" + esc(w.id) + "'" + ')">打开目录</button>' + rowAct("workspaces", w.id, w.name, w.name) + "</span></td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
   const obBox = document.getElementById("observations");
   obBox.innerHTML = dash.observations && dash.observations.length ? "<div class=table-wrap><table><tr><th>类型</th><th>项目</th><th>时间</th><th>操作</th></tr>" + dash.observations.slice(0, 50).map(o => "<tr><td>" + esc(o.type) + "</td><td class=muted>" + esc(o.project || "") + "</td><td class=muted>" + esc((o.created_at || "").slice(0,19)) + "</td><td>" + rowAct("observations", o.id, "观测", o.type) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无观测</div>';
   const ruBox = document.getElementById("rules");
@@ -972,14 +1129,6 @@ async function boot(){
   cpBox.innerHTML = checkpoints.length ? "<div class=table-wrap><table><tr><th>检查点</th><th>状态</th><th>目标</th><th>备注</th><th>操作</th></tr>" + checkpoints.slice(0, 60).map(c => "<tr><td>" + esc(c.cp) + "</td><td>" + esc(zh({ done:"完成", pending:"待办", skipped:"跳过", failed:"失败" }, c.status, c.status)) + "</td><td class=muted>" + esc(c.goal || "") + "</td><td class=muted>" + esc(c.notes || "") + "</td><td>" + rowAct("checkpoints", c.uuid, "检查点", c.notes || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无检查点</div>';
   const evBox = document.getElementById("evolution");
   evBox.innerHTML = evolution.length ? "<div class=table-wrap><table><tr><th>策略</th><th>状态</th><th>技能</th><th>候选</th><th>操作</th></tr>" + evolution.slice(0, 30).map(e => "<tr><td>" + esc(zh({ harden:"加固", innovate:"创新", repair:"修复", generalize:"泛化" }, e.strategy, e.strategy)) + "</td><td>" + esc(zh({ pending:"待审", applied:"已应用", rejected:"已拒绝" }, e.status, e.status)) + "</td><td class=muted>" + esc(e.skill_name || "") + "</td><td>" + esc(e.candidate) + "</td><td>" + rowAct("evolution", e.uuid, "演进", e.candidate) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无演进候选</div>';
-  // auto-seed empty categories once
-  try {
-    if (!localStorage.getItem("seeded")) {
-      const res = await rpc("dashboard.seed", {});
-      localStorage.setItem("seeded", "1");
-      if (res && res.created && Object.keys(res.created).length) await boot();
-    }
-  } catch (e) {}
 }
 boot().catch(e => document.body.insertAdjacentHTML("beforeend", "<pre>" + esc(e.stack) + "</pre>"));
 </script>

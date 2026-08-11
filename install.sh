@@ -15,6 +15,7 @@ mkdir -p "$CONFIG_DIR/plugins"
 cp "$REPO_DIR/plugin/selfforge.ts" "$CONFIG_DIR/plugins/"
 mkdir -p "$CONFIG_DIR/plugins/selfforge/lib"
 cp "$REPO_DIR"/plugin/selfforge/lib/*.ts "$CONFIG_DIR/plugins/selfforge/lib/"
+cp "$REPO_DIR"/plugin/selfforge/serve-daemon.ts "$CONFIG_DIR/plugins/selfforge/serve-daemon.ts"
 mkdir -p "$CONFIG_DIR/plugins/selfforge/lib/tools"
 cp "$REPO_DIR"/plugin/selfforge/lib/tools/*.ts "$CONFIG_DIR/plugins/selfforge/lib/tools/"
 

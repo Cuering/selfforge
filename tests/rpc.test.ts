@@ -240,3 +240,41 @@ test("data.update soft-edit workspaces rows exposed on /api/workspaces", async (
   const hit = after.body.find((w: any) => w.id === anyRow.id)
   expect(hit?.name).toBe("renamed ws")
 })
+
+test("workspace.merge dedups duplicate paths and reports merged count", async () => {
+  const { touchWorkspace } = await import("../plugin/selfforge/lib/workspace")
+  const dir = process.platform === "win32" ? "C:\\tmp\\proj-x" : "/tmp/proj-x"
+  touchWorkspace(dir)
+  touchWorkspace(dir.replace(/\\/g, "/"))
+  const before = await getJson("/api/workspaces")
+  const matches = before.body.filter((w: any) => w.path.replace(/[\\/]/g, "\\").toLowerCase().includes("proj-x"))
+  if (matches.length > 1) {
+    const r = await call("workspace.merge", {})
+    expect(r.result.merged).toBeGreaterThanOrEqual(1)
+  }
+  const after = await getJson("/api/workspaces")
+  const still = after.body.filter((w: any) => w.path.replace(/[\\/]/g, "\\").toLowerCase().includes("proj-x"))
+  expect(still.length).toBeLessThanOrEqual(1)
+})
+
+test("workspace.open resolves a workspace and returns its path (or a clear error)", async () => {
+  const { touchWorkspace } = await import("../plugin/selfforge/lib/workspace")
+  const { mkdtempSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { join } = await import("node:path")
+  const dir = mkdtempSync(join(tmpdir(), "selfforge-open-"))
+  touchWorkspace(dir)
+  const before = await getJson("/api/workspaces")
+  const row = before.body.find((w: any) => w.path === dir)
+  expect(row).toBeTruthy()
+  const r = await call("workspace.open", { id: row!.id })
+  expect(r.result).toBeTruthy()
+  expect(r.result.path).toBe(dir)
+})
+
+test("checkpoints.maintain returns remaining counts", async () => {
+  const r = await call("checkpoints.maintain", {})
+  expect(r.result).toBeTruthy()
+  expect(typeof r.result.removed).toBe("number")
+  expect(typeof r.result.remaining_active).toBe("number")
+})

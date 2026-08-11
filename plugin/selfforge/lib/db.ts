@@ -315,6 +315,15 @@ export function initDb(): Database {
   mkdirSync(ARCHIVE_DIR, { recursive: true })
   mkdirSync(REVIEWS_DIR, { recursive: true })
   db = openDb(DB_PATH)
+  // Multi-process safe: the dashboard daemon and the plugin may open the same
+  // DB concurrently. WAL allows a reader to proceed while background housekeeping
+  // (decay/merge/maintain/vacuum) writes; busy_timeout prevents SQLITE_BUSY drops.
+  try {
+    db.exec("PRAGMA journal_mode = WAL")
+  } catch {}
+  try {
+    db.exec("PRAGMA busy_timeout = 10000")
+  } catch {}
   db.exec(SCHEMA)
   // FTS5 is bundled with Bun but not with Node's node:sqlite; degrade gracefully.
   try {

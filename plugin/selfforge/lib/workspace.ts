@@ -111,6 +111,62 @@ export function workspaceList(opts?: { limit?: number }): Workspace[] {
     .all(opts?.limit ?? 20) as Workspace[]
 }
 
+/** Normalize a directory path for de-duplication & display: unify separators + trailing slash + case key. */
+export function normalizePath(p: string): string {
+  if (!p) return ""
+  let s = p.replace(/[\\/]+/g, "\\").replace(/\\+$/, "")
+  // Windows drive "C:" with no slash is invalid; normalize "C:" -> "C:\\"
+  if (/^[a-zA-Z]:$/.test(s)) s += "\\"
+  const lower = s.toLowerCase()
+  return process.platform === "win32" ? lower : s
+}
+
+/** Canonical display form: separators unified + trailing slash trimmed, case preserved. */
+export function canonicalizePath(p: string): string {
+  if (!p) return ""
+  let s = p.replace(/[\\/]+/g, "\\").replace(/\\+$/, "")
+  if (/^[a-zA-Z]:$/.test(s)) s += "\\"
+  return s
+}
+
+/**
+ * Merge duplicate workspace rows that refer to the same directory
+ * (e.g. same path recorded with different separators / trailing slash / case).
+ * The keeper keeps the max visits and most recent last_seen; the rest are
+ * soft-deleted. Idempotent and safe to run on every load.
+ */
+export function mergeDuplicateWorkspaces(): { merged: number; total: number } {
+  const db = getDb()
+  const rows = db
+    .query("SELECT * FROM workspaces WHERE deleted = 0 ORDER BY visits DESC, last_seen DESC")
+    .all() as Workspace[]
+  const byKey = new Map<string, Workspace>()
+  let merged = 0
+  for (const w of rows) {
+    const key = normalizePath(w.path)
+    if (!key) continue
+    const keeper = byKey.get(key)
+    if (!keeper) {
+      byKey.set(key, w)
+      // adopt the canonical path spelling so the surviving row is clean,
+      // but only if that exact string is not held by another row (path is UNIQUE)
+      const canon = canonicalizePath(w.path)
+      if (canon !== w.path) {
+        const taken = db.query("SELECT id FROM workspaces WHERE path = ? AND id != ?").get(canon, w.id)
+        if (!taken) db.query("UPDATE workspaces SET path = ? WHERE id = ?").run(canon, w.id)
+      }
+      continue
+    }
+    // duplicate → fold visits + last_seen into the keeper, soft-delete this row
+    db.query(
+      "UPDATE workspaces SET visits = ?, last_seen = ?, updated_at = ? WHERE id = ?"
+    ).run(keeper.visits + w.visits, w.last_seen > keeper.last_seen ? w.last_seen : keeper.last_seen, now(), keeper.id)
+    db.query("UPDATE workspaces SET deleted = 1, updated_at = ? WHERE id = ?").run(now(), w.id)
+    merged++
+  }
+  return { merged, total: rows.length }
+}
+
 export function workspaceStatus(directory?: string): {
   workspaces: Workspace[]
   current?: Workspace
