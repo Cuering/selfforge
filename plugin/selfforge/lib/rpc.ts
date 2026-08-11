@@ -1,13 +1,17 @@
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { getDb, nodeId, clock, advanceClockTo } from "./db"
+import { getDb, nodeId, clock, advanceClockTo, logObs } from "./db"
 import { exportSnapshot, importSnapshot, transferStatus, SNAPSHOT_FORMAT } from "./transfer"
-import { memoryList, memoryUpdateById, memoryArchiveById } from "./memory"
-import { dailySummaries } from "./summary"
-import { skillList, skillStatus } from "./skills"
+import { memoryList, memoryUpdateById, memoryArchiveById, memoryAdd } from "./memory"
+import { dailySummaries, summarizeSession, sessionSummaryList } from "./summary"
+import { skillCreate, skillList, skillStatus } from "./skills"
 import { workspaceList } from "./workspace"
-import { goalStatus } from "./goals"
-import { patternCandidates } from "./patterns"
+import { goalStatus, goalStart } from "./goals"
+import { ruleObserve, ruleStatus } from "./rules"
+import { evolutionPropose, evolutionList } from "./evolution"
+import { patternCandidates, recordPattern } from "./patterns"
+import { runRepair, recordSignal } from "./repair"
+import { getSession, sessionSearch } from "./review"
 
 /**
  * Phase 3 — local JSON-RPC endpoint (HTTP/1.1, zero dependencies).
@@ -94,6 +98,95 @@ async function handle(method: string, params: any): Promise<any> {
     }
     case "memory.daily":
       return dailySummaries({ limit: Number(params?.limit ?? 14) })
+    case "skills.create": {
+      if (!params?.name || !params?.description) throw new Error("params.name and params.description required")
+      return skillCreate(String(params.name), String(params.description), params.body ? String(params.body) : "")
+    }
+    case "rules.create": {
+      if (!params?.rule) throw new Error("params.rule required")
+      return ruleObserve({
+        rule: String(params.rule),
+        domain: params.domain ? String(params.domain) : undefined,
+        explicitScope: params.explicitScope === "global" ? "global" : "local",
+      })
+    }
+    case "goals.create": {
+      if (!params?.goal) throw new Error("params.goal required")
+      return goalStart({
+        goal: String(params.goal),
+        northStar: params.northStar ? String(params.northStar) : undefined,
+        completionCriteria: params.completionCriteria ? String(params.completionCriteria) : undefined,
+      })
+    }
+    case "evolution.create": {
+      if (!params?.skill || !params?.strategy || !params?.candidate) throw new Error("params.skill, params.strategy and params.candidate required")
+      return evolutionPropose({
+        skill: String(params.skill),
+        strategy: String(params.strategy),
+        candidate: String(params.candidate),
+        rationale: params.rationale ? String(params.rationale) : undefined,
+      })
+    }
+    case "repairs.create": {
+      if (!params?.tool) throw new Error("params.tool required")
+      const tool = String(params.tool)
+      const context = params.context ? String(params.context) : "manual"
+      const errCode = params.errCode ? String(params.errCode) : "MANUAL"
+      for (let i = 0; i < 3; i++) recordSignal("failure", tool, context, errCode)
+      return runRepair({ tool, context, errCode, trigger: "manual" })
+    }
+    case "patterns.record": {
+      if (!params?.tool) throw new Error("params.tool required")
+      return recordPattern(String(params.tool), params.errCode ? String(params.errCode) : undefined, params.context ? String(params.context) : undefined, params.episodeKey ? String(params.episodeKey) : undefined)
+    }
+    case "session.distill": {
+      const sessions = sessionSummaryList({ limit: 500 })
+      const target = params?.sessionId ? String(params.sessionId) : (sessions[0]?.session_id ?? "")
+      if (!target) throw new Error("no session to distill")
+      const s = getSession(target)
+      let buf: Array<{ role: string; content: string }> = []
+      try {
+        buf = JSON.parse(s.buffer || "[]")
+      } catch {}
+      if (buf.length === 0) {
+        const hits = sessionSearch("", { limit: 100 }).filter((h) => h.session_id === target)
+        buf = hits.map((h) => ({ role: h.role, content: h.content }))
+      }
+      const row = summarizeSession(target, buf, s.turn_count)
+      return { session_id: target, fact_count: row.fact_count, summary: row.summary }
+    }
+    case "dashboard.seed": {
+      const d = apiDashboard()
+      const created: Record<string, unknown> = {}
+      if (d.counts.skills === 0) {
+        skillCreate("bash-tools", "Shell, PowerShell and CLI automation patterns")
+        created.skills = "bash-tools"
+      }
+      if (d.counts.rules === 0) {
+        ruleObserve({ rule: "提交前先运行测试并检查 lint", domain: "workflow", explicitScope: "local" })
+        created.rules = "workflow"
+      }
+      if (d.counts.goals === 0) {
+        goalStart({ goal: "优化 selfforge dashboard 体验", northStar: "数据一目了然", completionCriteria: "所有栏目可看可操作" })
+        created.goals = "active"
+      }
+      if (d.counts.evolution === 0) {
+        evolutionPropose({ skill: "bash-tools", strategy: "harden", candidate: "记 dashboard 生成/蒸馏按钮的用法", rationale: "seed" })
+        created.evolution = "pending"
+      }
+      if (d.counts.repairs === 0) {
+        recordSignal("failure", "shell", "seed", "SEED_1")
+        recordSignal("failure", "shell", "seed", "SEED_1")
+        recordSignal("failure", "shell", "seed", "SEED_1")
+        runRepair({ tool: "shell", context: "seed", errCode: "SEED_1", trigger: "manual" })
+        created.repairs = "draft"
+      }
+      if (d.counts.observations === 0) {
+        logObs("seed", { note: "dashboard seed" }, "seed")
+        created.observations = "1"
+      }
+      return { created, counts: apiDashboard().counts }
+    }
     case "skills.list": {
       const list = skillList({ includeDeleted: false }).map((s) => ({
         id: s.uuid,
@@ -270,11 +363,43 @@ function apiDashboard() {
       repairs: count("repairs"),
       workspaces: count("workspaces"),
     },
+    observations: (() => {
+      try {
+        const rows = getDb()
+          .query("SELECT type, project, created_at FROM observations WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
+          .all() as Array<{ type: string; project: string | null; created_at: string }>
+        return rows
+      } catch {
+        return []
+      }
+    })(),
   }
 }
 
 function apiGoals() {
   return goalStatus().map((g) => ({ id: g.uuid, goal: g.goal, status: g.status, project: g.project, updated_at: g.updated_at }))
+}
+
+function apiRules() {
+  return getDb()
+    .query("SELECT rule, domain, explicit_scope, count, created_at FROM rules WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
+    .all() as Array<{ rule: string; domain: string; explicit_scope: string; count: number; created_at: string }>
+}
+
+function apiCheckpoints() {
+  return getDb()
+    .query(
+      "SELECT c.cp, c.status, c.notes, c.created_at, g.goal, g.uuid AS goal_uuid FROM checkpoints c LEFT JOIN goals g ON g.id = c.goal_id WHERE c.deleted = 0 ORDER BY c.id DESC LIMIT 100"
+    )
+    .all() as Array<{ cp: string; status: string; notes: string | null; created_at: string; goal: string | null; goal_uuid: string | null }>
+}
+
+function apiEvolution() {
+  return getDb()
+    .query(
+      "SELECT e.strategy, e.status, e.candidate, e.created_at, s.name AS skill_name FROM evolution e JOIN skills s ON s.id = e.skill_id ORDER BY e.id DESC LIMIT 50"
+    )
+    .all() as Array<{ strategy: string; status: string; candidate: string; created_at: string; skill_name: string }>
 }
 
 async function serveStatic(req: IncomingMessage, res: ServerResponse, url: string) {
@@ -292,6 +417,9 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, url: strin
   if (route === "/api/repairs") return json(res, apiRepairs())
   if (route === "/api/patterns") return json(res, apiPatterns())
   if (route === "/api/workspaces") return json(res, workspaceList({ limit: 50 }))
+  if (route === "/api/rules") return json(res, apiRules())
+  if (route === "/api/checkpoints") return json(res, apiCheckpoints())
+  if (route === "/api/evolution") return json(res, apiEvolution())
   res.writeHead(404, { "Content-Type": "application/json" })
   res.end(JSON.stringify({ error: `not found: ${route}` }))
 }
@@ -452,6 +580,9 @@ const DASHBOARD_HTML = `<!doctype html>
   nav button.active .cnt { background:rgba(255,255,255,.22); color:var(--strong); }
   main { flex:1; padding:16px 22px; overflow-y:auto; min-width:0; }
   .tab-title { font-size:15px; color:var(--strong); margin:0 0 12px; }
+  .toolbar { display:flex; gap:8px; margin:-4px 0 12px; min-height:30px; }
+  .toolbar button.gen-btn { background:var(--acc); color:var(--strong); border:0; border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
+  .toolbar button.gen-btn:hover { filter:brightness(1.1); }
   .pane { display:none; }
   .pane.active { display:block; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
@@ -492,12 +623,17 @@ const DASHBOARD_HTML = `<!doctype html>
   <nav id="nav"></nav>
   <main id="main">
     <h2 class="tab-title" id="tabTitle">记忆</h2>
+    <div class="toolbar" id="toolbar"></div>
     <section class="pane active" id="pane-memories"><div class="panel" id="memories"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-skills"><div class="panel" id="skills"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-rules"><div class="panel" id="rules"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-goals"><div class="panel" id="goals"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-checkpoints"><div class="panel" id="checkpoints"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-evolution"><div class="panel" id="evolution"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-daily"><div class="panel" id="daily"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-repairs"><div class="panel" id="repairs"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-patterns"><div class="panel" id="patterns"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-observations"><div class="panel" id="observations"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-workspaces"><div class="panel" id="workspaces"><div class="empty">加载中…</div></div></section>
   </main>
 </div>
@@ -533,14 +669,18 @@ const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差�
 const COUNT_ZH = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", observations:"观测", repairs:"修复", patterns:"模式", workspaces:"工作区" };
 const TABS = [
   { id:"memories", label:"记忆", key:"memories" },
-  { id:"skills", label:"技能", key:"skills" },
-  { id:"goals", label:"目标", key:"goals" },
-  { id:"daily", label:"每日总结", key:"daily" },
-  { id:"repairs", label:"修复草稿", key:"repairs" },
-  { id:"patterns", label:"模式候选", key:"patterns" },
+  { id:"skills", label:"技能", key:"skills", gen:{ method:"skills.create", prompt:"技能名称：", desc:"技能描述：", args:["name","description"] } },
+  { id:"rules", label:"规则", key:"rules", gen:{ method:"rules.create", prompt:"规则内容：", args:["rule"] } },
+  { id:"goals", label:"目标", key:"goals", gen:{ method:"goals.create", prompt:"目标：", desc:"北星目标（可选）：", args:["goal","northStar"] } },
+  { id:"checkpoints", label:"检查点", key:"checkpoints" },
+  { id:"evolution", label:"演进", key:"evolution", gen:{ method:"evolution.create", prompt:"技能名：", desc:"策略(harden/innovate/repair/generalize)：", args:["skill","strategy"] } },
+  { id:"daily", label:"每日总结", key:"daily", distill:true },
+  { id:"repairs", label:"修复草稿", key:"repairs", gen:{ method:"repairs.create", prompt:"工具名：", args:["tool"] } },
+  { id:"patterns", label:"模式候选", key:"patterns", gen:{ method:"patterns.record", prompt:"工具名：", args:["tool"] } },
+  { id:"observations", label:"观测", key:"observations" },
   { id:"workspaces", label:"工作区", key:"workspaces" }
 ];
-const TITLES = { memories:"记忆", skills:"技能", goals:"目标", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", workspaces:"工作区" };
+const TITLES = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", observations:"观测", workspaces:"工作区" };
 function tierBadge(t, label){ return '<span class="tag t-' + t + '">' + esc(label || t) + "</span>"; }
 function statusBadge(s, label){ return '<span class="tag s-' + s + '">' + esc(label || s) + "</span>"; }
 function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
@@ -571,11 +711,58 @@ function switchTab(id){
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.id === "pane-" + id));
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === id));
   document.getElementById("tabTitle").textContent = TITLES[id] || id;
+  updateToolbar();
+}
+function updateToolbar(){
+  const tab = TABS.find((t) => t.id === activeTab);
+  const bar = document.getElementById("toolbar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  if (tab && tab.gen) {
+    const btn = document.createElement("button");
+    btn.textContent = "生成";
+    btn.className = "gen-btn";
+    btn.addEventListener("click", () => genByTab(tab));
+    bar.appendChild(btn);
+  }
+  if (tab && tab.distill) {
+    const btn = document.createElement("button");
+    btn.textContent = "蒸馏";
+    btn.className = "gen-btn";
+    btn.addEventListener("click", () => distillNow());
+    bar.appendChild(btn);
+  }
+}
+async function genByTab(tab){
+  const g = tab.gen;
+  const val = prompt(g.prompt + (g.desc ? "(留空则跳过) " : ""), "");
+  if (val === null || !val.trim()) return;
+  const params = { [g.args[0]]: val.trim() };
+  if (g.desc) {
+    const d = prompt(g.desc, "");
+    if (d !== null && d.trim()) params[g.args[1]] = d.trim();
+  }
+  try {
+    const res = await rpc(g.method, params);
+    alert("已生成：" + (res.name || res.rule || res.goal || res.id || "OK"));
+    await boot();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+async function distillNow(){
+  try {
+    const res = await rpc("session.distill", {});
+    alert("已蒸馏要点 " + res.fact_count + " 条" + (res.summary ? "：" + esc(res.summary).slice(0, 80) : "（无可提取内容）"));
+    await boot();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 async function boot(){
-  const [dash, memories, skills, goals, repairs, patterns, daily, workspaces] = await Promise.all([
+  const [dash, memories, skills, goals, repairs, patterns, daily, workspaces, rules, checkpoints, evolution] = await Promise.all([
     get("/api/dashboard"), get("/api/memories"), get("/api/skills"), get("/api/goals"), get("/api/repairs"), get("/api/patterns"),
-    rpc("memory.daily", { limit: 14 }), get("/api/workspaces")
+    rpc("memory.daily", { limit: 14 }), get("/api/workspaces"), get("/api/rules"), get("/api/checkpoints"), get("/api/evolution")
   ]);
   memoriesById = {};
   for (const m of memories) memoriesById[m.uuid || m.id] = m;
@@ -589,6 +776,7 @@ async function boot(){
     return '<button data-tab="' + t.id + '"' + (t.id === activeTab ? ' class=active' : '') + '><span>' + t.label + "</span>" + (t.key ? "<span class=cnt>" + n + "</span>" : "") + "</button>";
   }).join("");
   nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => switchTab(b.getAttribute("data-tab"))));
+  updateToolbar();
   const memBox = document.getElementById("memories");
   if (!memories.length) memBox.innerHTML = '<div class="empty">暂无记忆</div>';
   else {
@@ -613,6 +801,22 @@ async function boot(){
   ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
   const wsBox = document.getElementById("workspaces");
   wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
+  const obBox = document.getElementById("observations");
+  obBox.innerHTML = dash.observations && dash.observations.length ? "<div class=table-wrap><table><tr><th>类型</th><th>项目</th><th>时间</th></tr>" + dash.observations.slice(0, 50).map(o => "<tr><td>" + esc(o.type) + "</td><td class=muted>" + esc(o.project || "") + "</td><td class=muted>" + esc((o.created_at || "").slice(0,19)) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无观测</div>';
+  const ruBox = document.getElementById("rules");
+  ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>规则</th><th>域</th><th>范围</th><th>次数</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:"全局", local:"本地" }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无规则</div>';
+  const cpBox = document.getElementById("checkpoints");
+  cpBox.innerHTML = checkpoints.length ? "<div class=table-wrap><table><tr><th>检查点</th><th>状态</th><th>目标</th><th>备注</th></tr>" + checkpoints.slice(0, 60).map(c => "<tr><td>" + esc(c.cp) + "</td><td>" + esc(zh({ done:"完成", pending:"待办", skipped:"跳过", failed:"失败" }, c.status, c.status)) + "</td><td class=muted>" + esc(c.goal || "") + "</td><td class=muted>" + esc(c.notes || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无检查点</div>';
+  const evBox = document.getElementById("evolution");
+  evBox.innerHTML = evolution.length ? "<div class=table-wrap><table><tr><th>策略</th><th>状态</th><th>技能</th><th>候选</th></tr>" + evolution.slice(0, 30).map(e => "<tr><td>" + esc(zh({ harden:"加固", innovate:"创新", repair:"修复", generalize:"泛化" }, e.strategy, e.strategy)) + "</td><td>" + esc(zh({ pending:"待审", applied:"已应用", rejected:"已拒绝" }, e.status, e.status)) + "</td><td class=muted>" + esc(e.skill_name || "") + "</td><td>" + esc(e.candidate) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无演进候选</div>';
+  // auto-seed empty categories once
+  try {
+    if (!localStorage.getItem("seeded")) {
+      const res = await rpc("dashboard.seed", {});
+      localStorage.setItem("seeded", "1");
+      if (res && res.created && Object.keys(res.created).length) await boot();
+    }
+  } catch (e) {}
 }
 boot().catch(e => document.body.insertAdjacentHTML("beforeend", "<pre>" + esc(e.stack) + "</pre>"));
 </script>

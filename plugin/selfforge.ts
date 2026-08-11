@@ -220,6 +220,23 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
                 maybeSpawnReview(sid, "idle")
               }
             }
+            // Feature 1: auto-distill — if the session has buffered messages but
+            // no distilled summary yet, build one on idle so the dashboard's
+            // daily summary shows content even without a manual session_summary call.
+            try {
+              const st = getSessionSummary(sid)
+              if (st && !st.summary && st.fact_count === 0) {
+                const s = getSession(sid)
+                let buf: Array<{ role: string; content: string }> = []
+                try {
+                  buf = JSON.parse(s.buffer || "[]")
+                } catch {}
+                if (buf.length > 0) {
+                  summarizeSession(sid, buf, s.turn_count)
+                  logObs("session_summary_auto", { session: sid, facts: getSessionSummary(sid)?.fact_count ?? 0 }, s.project || projectName())
+                }
+              }
+            } catch {}
             break
           }
         }
