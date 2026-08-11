@@ -484,7 +484,7 @@ function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
 function memRow(m){
   const id = m.uuid || m.id;
   const tag = tierClass(m.tier) + zh(TIER_ZH, m.tier);
-  const act = "<span class=act><button onclick=\"editMem('" + id + "')\">编辑</button><button class=del onclick=\"delMem('" + id + "')\">删除</button></span>";
+  const act = '<span class=act><button onclick="editMem(' + "'" + id + "'" + ')">编辑</button><button class=del onclick="delMem(' + "'" + id + "'" + ')">删除</button></span>';
   return "<tr><td>" + tag + m.strength + "</td><td>" + esc(m.content) + "</td><td class=muted>" + esc(m.scope || "") + "</td><td class=muted>" + esc((m.created_at || "").slice(0,10)) + "</td><td class=muted>" + act + "</td></tr>";
 }
 let editingId = null;
@@ -512,7 +512,7 @@ async function boot(){
   const st = dash.status;
   document.getElementById("sub").textContent = "节点 " + st.node_id + " · 时钟 " + st.clock + " · " + (st.home || st.db_path);
   const counts = dash.counts;
-  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh({ memories:"记忆", skills:"技能", goals:"目标", repairs:"修复", patterns:"模式", workspaces:"工作区" }, k, k) + "</span></div>").join("");
+  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh({ memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", observations:"观测", repairs:"修复", patterns:"模式", workspaces:"工作区" }, k, k) + "</span></div>").join("");
   const memBox = document.getElementById("memories");
   if (!memories.length) memBox.innerHTML = '<div class="empty">暂无记忆</div>';
   else {
