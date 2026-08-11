@@ -200,6 +200,13 @@ MIT
 
 ## Version history
 
+### v1.9.1 (2026-08-11) Dashboard management panel
+
+- **Editable/deletable memories:** the dashboard memory panel shows a scrollable list with 编辑/删除 per row; `memory.update` and `memory.delete` JSON-RPC methods edit content or archive a memory by id/uuid.
+- **Daily summary section:** new `memory.daily` aggregates session summaries by day (sessions, fact count, up to 20 facts) and renders a 每日总结 panel.
+- **Chinese labels:** all tier/status/goal/repair labels render as concise Chinese (热/温/冷, 已确认/候选, 进行中/已完成, etc.).
+- Tests: `tests/rpc.test.ts` adds memory update/delete/daily cases — full suite 104 pass.
+
 ### v1.9.0 (2026-08-10) OpenCode UI integration
 
 - **Auto background server:** the plugin starts the dashboard/RPC server on load (`serve(9210)`, port-stepping on conflict), so `selfforge serve`'s panel is always available.
