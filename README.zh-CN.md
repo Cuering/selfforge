@@ -68,6 +68,15 @@ bash selfforge/install.sh
 
 3. 重启opencode。首次加载时插件会创建`~/.evolve/unified.db`与`~/.evolve/memory.context.md`。
 
+> **桌面版（Node/Electron）说明：**桌面版基于Node，无法`import` `.ts`文件。需先把插件编译成`.js`并把`plugin`指向编译产物：
+>
+> ```bash
+> cd ~/.config/opencode/plugins
+> bun build.mjs                # 输出 compiled/selfforge.js
+> ```
+>
+> 然后把`"plugin"`改为`["./plugins/compiled/selfforge.js"]`。CLI（Bun）可直接加载`.ts`入口。
+
 ## 工具
 
 |分组|工具|
@@ -159,13 +168,20 @@ git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐
 - `GET /api/*`——JSON端点（`/api/dashboard`、`/api/memories`、`/api/skills`、`/api/goals`、`/api/repairs`、`/api/patterns`、`/api/workspaces`）。
 - `POST /`——上述JSON-RPC接口。
 
-### OpenCode内集成（v1.9）
+### OpenCode内集成
 
-插件加载时自动在后台拉起仪表盘服务（`serve(9210)`，端口被占用时自动避让），浏览器随时可开。在OpenCode中：
+插件加载时在后台拉起**独立`serve-daemon.js`子进程**承载仪表盘/RPC服务（`serve(9210)`，端口被占用时自动避让），跨opencode重启保持存活、端口不漂移。在OpenCode中：
 
 - 输入`/selfforge`——先输出终端文字概览（记忆/技能/目标/修复/模式计数），需要时打开浏览器面板。
-- 工具`selfforge_status`返回纯文本概览；`selfforge_dashboard`拉起服务并打开浏览器；`selfforge_dashboard_stop`停止服务。
-- 服务单例化：`serve()`可重复调用而不重复监听，插件卸载时`closeServer()`优雅关闭。
+- 工具`selfforge_status`返回纯文本概览；`selfforge_dashboard`拉起daemon并打开浏览器；`selfforge_dashboard_stop`停止服务。
+- 进程内`serve()`/`closeServer()`作为daemon不可用时的回退。
+
+### 复盘不再依赖外部CLI
+
+过去复盘需要spawn外部`opencode` CLI——但npm安装的二进制常常是损坏的postinstall占位符，根本跑不起来，导致桌面版记忆生成被静默禁用。现在复盘改为**在进程内用opencode SDK完成**：插件在运行中的服务器上开一个子会话（`client.session.create`+`client.session.promptAsync`，agent为`evolve-reviewer`），复盘直接跑在opencode内部。spawn外部CLI仅保留为最后兜底。
+
+- 复盘子会话被追踪（`reviewSessionIDs`）且其消息被忽略，复盘不会再触发复盘。
+- 每次复盘触发现在只写1条`review_triggered`观测（过去是`review_spawned`+`session_summary_built`+`review_triggered`三条）。
 
 ## Metis式记忆（v1.8）
 
@@ -178,6 +194,16 @@ git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐
 - **召回评测基准（`memory_eval`/`selfforge eval`）：**播种已知样例集，对一组正负查询报告precision@k，让召回退化可见。
 
 ## 版本更新说明
+
+### v1.9.2（2026-08-11）进程内复盘+稳定仪表盘daemon
+
+- **复盘改在opencode内部跑，不再依赖外部CLI：**npm安装的`opencode.exe`常是损坏的postinstall占位符，spawn外部CLI的复盘会静默失败（从而掩盖记忆生成）。复盘现在改为在运行中的服务器上开子会话（`client.session.create`+`promptAsync`，agent为`evolve-reviewer`）——`spawnReviewSdk`。spawn外部CLI仅保留为最后兜底（失败时写`review_fallback_cli`观测）。
+- **独立仪表盘daemon：**插件改为spawn独立`serve-daemon.js`子进程，仪表盘跨opencode重启存活、端口固定；进程内`serve()`为回退。
+- **通用逐行编辑/删除：**全部数据tab（记忆、技能、目标/检查点、进化、修复、模式、观测、工作区）都支持`data.update`/`data.delete`JSON-RPC，并带每tab描述文字。
+- **工作区卫生：**同一目录的重复工作区行合并为一个（`mergeDuplicateWorkspaces`），`checkpoints.maintain`修剪已完成/孤立检查点，`workspace.open`spawn系统文件管理器。
+- **软删过滤修复：**goals/evolution/repairs仪表盘API与检查点修剪现在跳过`deleted=1`行，不再把软删条目顶上列表。
+- **复盘观测收敛：**每次触发只写1条`review_triggered`（过去是`review_spawned`+`session_summary_built`+`review_triggered`三条）；陈旧/失败复盘残留已清理。
+- 测试：全量**119通过/0失败/341断言，13个文件**。
 
 ### v1.9.1（2026-08-11）仪表盘管理面板
 

@@ -68,6 +68,15 @@ Manual install:
 
 3. Restart opencode. The plugin creates `~/.evolve/unified.db` and `~/.evolve/memory.context.md` on first load.
 
+> **Desktop (Node/Electron) note:** the desktop app runs on Node and cannot `import` `.ts` files. Build the plugins to `.js` first and point `plugin` at the compiled bundle:
+>
+> ```bash
+> cd ~/.config/opencode/plugins
+> bun build.mjs                # emits compiled/selfforge.js
+> ```
+>
+> then set `"plugin": ["./plugins/compiled/selfforge.js"]`. The CLI (Bun) can load the `.ts` entry directly.
+
 ## Tools
 
 | Group | Tools |
@@ -176,13 +185,20 @@ A git repo holds `snapshot.json` as the shared truth. `team_sync` runs pull → 
 - `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/repairs`, `/api/patterns`, `/api/workspaces`).
 - `POST /` — the JSON-RPC surface above.
 
-### Integrated into OpenCode (v1.9)
+### Integrated into OpenCode
 
-The plugin auto-starts the dashboard/RPC server in the background on load (`serve(9210)`, port-stepping on conflict), so the browser panel is always reachable. Inside OpenCode:
+On load the plugin spawns a **detached `serve-daemon.js` child process** to host the dashboard/RPC server (port 9210, port-stepping on conflict), so the browser panel stays up across opencode restarts and the port does not drift. Inside OpenCode:
 
 - Type `/selfforge` — prints a terminal overview (memory/skill/goal/repair/pattern counts), and opens the browser panel on request.
-- Tools: `selfforge_status` returns a plain-text overview; `selfforge_dashboard` ensures the server is up and opens the browser; `selfforge_dashboard_stop` shuts it down.
-- Singleton serving: `serve()` is idempotent (no duplicate listeners) and `closeServer()` shuts down cleanly on plugin dispose.
+- Tools: `selfforge_status` returns a plain-text overview; `selfforge_dashboard` ensures the daemon is up and opens the browser; `selfforge_dashboard_stop` shuts it down.
+- In-process serving (`serve()` / `closeServer()`) remains as a fallback when spawning the daemon is unavailable.
+
+### Conversation review without an external CLI
+
+Reviews used to spawn the `opencode` CLI — but the npm-installed binary is often a broken postinstall stub and simply never runs, which silently disabled memory generation on desktop. Reviews now run **in-process via the opencode SDK**: the plugin opens a child session on the running server (`client.session.create` + `client.session.promptAsync` with the `evolve-reviewer` agent) and the reviewer runs inside opencode itself. The detached CLI spawn stays only as a last-resort fallback.
+
+- Review sub-sessions are tracked (`reviewSessionIDs`) and their messages ignored, so a review never re-triggers a review.
+- Each review trigger now logs a single consolidated `review_triggered` observation (was three: `review_spawned` + `session_summary_built` + `review_triggered`).
 
 ## Metis-inspired memory (v1.8)
 
@@ -199,6 +215,16 @@ Five capabilities adapted from the [MemTensor Metis](https://github.com/MemTenso
 MIT
 
 ## Version history
+
+### v1.9.2 (2026-08-11) In-process review + stable dashboard daemon
+
+- **Reviews run inside opencode, no external CLI needed:** the npm-installed `opencode.exe` is often a broken postinstall stub, so spawned-CLI reviews silently never ran (which hid memory generation). Reviews now open a child session on the running server (`client.session.create` + `promptAsync` with the `evolve-reviewer` agent) — `spawnReviewSdk`. The detached CLI spawn remains only as a last-resort fallback (`review_fallback_cli` observation on failure).
+- **Detached dashboard daemon:** the plugin spawns `serve-daemon.js` as a separate child process, so the dashboard survives opencode restarts and the port stays fixed; in-process `serve()` is the fallback.
+- **Generic per-row edit/delete:** all dashboard tabs (memories, skills, goals/checkpoints, evolution, repairs, patterns, observations, workspaces) now support `data.update` / `data.delete` JSON-RPC with per-tab description text.
+- **Workspace hygiene:** duplicate workspace rows for the same directory merge into one keeper (`mergeDuplicateWorkspaces`), `checkpoints.maintain` prunes done/orphaned checkpoints, and `workspace.open` spawns the OS file manager.
+- **Soft-delete filter fix:** goals/evolution/repairs dashboard APIs and checkpoint pruning now skip `deleted = 1` rows instead of surfacing soft-deleted entries.
+- **Consolidated review observations:** each trigger writes one `review_triggered` row instead of three (`review_spawned` + `session_summary_built` + `review_triggered`); stale/failed review litter was cleaned up.
+- Tests: full suite **119 pass / 0 fail / 341 expect across 13 files**.
 
 ### v1.9.1 (2026-08-11) Dashboard management panel
 
