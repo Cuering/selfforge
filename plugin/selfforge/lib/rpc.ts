@@ -1,10 +1,10 @@
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { getDb, nodeId, clock, advanceClockTo, logObs } from "./db"
+import { getDb, nodeId, clock, advanceClockTo, logObs, now } from "./db"
 import { exportSnapshot, importSnapshot, transferStatus, SNAPSHOT_FORMAT } from "./transfer"
 import { memoryList, memoryUpdateById, memoryArchiveById, memoryAdd } from "./memory"
 import { dailySummaries, summarizeSession, sessionSummaryList } from "./summary"
-import { skillCreate, skillList, skillStatus } from "./skills"
+import { skillCreate, skillList, skillStatus, skillArchive, skillPatch } from "./skills"
 import { workspaceList } from "./workspace"
 import { goalStatus, goalStart } from "./goals"
 import { ruleObserve, ruleStatus } from "./rules"
@@ -138,6 +138,14 @@ async function handle(method: string, params: any): Promise<any> {
     case "patterns.record": {
       if (!params?.tool) throw new Error("params.tool required")
       return recordPattern(String(params.tool), params.errCode ? String(params.errCode) : undefined, params.context ? String(params.context) : undefined, params.episodeKey ? String(params.episodeKey) : undefined)
+    }
+    case "data.update": {
+      const updated = updateRow(params?.kind, params?.id, params)
+      return { ok: updated.ok, message: updated.message }
+    }
+    case "data.delete": {
+      const del = deleteRow(params?.kind, params?.id)
+      return { ok: del.ok, message: del.message }
     }
     case "session.distill": {
       const sessions = sessionSummaryList({ limit: 500 })
@@ -339,7 +347,17 @@ function apiRepairs() {
 }
 
 function apiPatterns() {
-  return patternCandidates().map((c) => ({ sig: c.sig_label, tool: c.tool, err_code: c.err_code, episodes: c.episodes }))
+  return patternCandidates().map((c) => ({ id: c.sig_hash, sig: c.sig_label, tool: c.tool, err_code: c.err_code, episodes: c.episodes }))
+}
+
+function apiWorkspacesData() {
+  return workspaceList({ limit: 50 }).map((w) => ({
+    id: w.uuid || w.id,
+    name: w.name,
+    path: w.path,
+    visits: w.visits,
+    last_seen: w.last_seen,
+  }))
 }
 
 function apiDashboard() {
@@ -366,9 +384,9 @@ function apiDashboard() {
     observations: (() => {
       try {
         const rows = getDb()
-          .query("SELECT type, project, created_at FROM observations WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
-          .all() as Array<{ type: string; project: string | null; created_at: string }>
-        return rows
+          .query("SELECT id, uuid, type, project, created_at FROM observations WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
+          .all() as Array<{ id: number; uuid: string; type: string; project: string | null; created_at: string }>
+        return rows.map((o) => ({ id: o.uuid, type: o.type, project: o.project, created_at: o.created_at }))
       } catch {
         return []
       }
@@ -382,24 +400,134 @@ function apiGoals() {
 
 function apiRules() {
   return getDb()
-    .query("SELECT rule, domain, explicit_scope, count, created_at FROM rules WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
-    .all() as Array<{ rule: string; domain: string; explicit_scope: string; count: number; created_at: string }>
+    .query("SELECT id, uuid, rule, domain, explicit_scope, count, created_at FROM rules WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
+    .all() as Array<{ id: number; uuid: string; rule: string; domain: string; explicit_scope: string; count: number; created_at: string }>
 }
 
 function apiCheckpoints() {
   return getDb()
     .query(
-      "SELECT c.cp, c.status, c.notes, c.created_at, g.goal, g.uuid AS goal_uuid FROM checkpoints c LEFT JOIN goals g ON g.id = c.goal_id WHERE c.deleted = 0 ORDER BY c.id DESC LIMIT 100"
+      "SELECT c.id, c.uuid, c.cp, c.status, c.notes, c.created_at, g.goal, g.uuid AS goal_uuid FROM checkpoints c LEFT JOIN goals g ON g.id = c.goal_id WHERE c.deleted = 0 ORDER BY c.id DESC LIMIT 100"
     )
-    .all() as Array<{ cp: string; status: string; notes: string | null; created_at: string; goal: string | null; goal_uuid: string | null }>
+    .all() as Array<{ id: number; uuid: string; cp: string; status: string; notes: string | null; created_at: string; goal: string | null; goal_uuid: string | null }>
 }
 
 function apiEvolution() {
   return getDb()
     .query(
-      "SELECT e.strategy, e.status, e.candidate, e.created_at, s.name AS skill_name FROM evolution e JOIN skills s ON s.id = e.skill_id ORDER BY e.id DESC LIMIT 50"
+      "SELECT e.id, e.uuid, e.strategy, e.status, e.candidate, e.created_at, s.name AS skill_name FROM evolution e JOIN skills s ON s.id = e.skill_id WHERE e.deleted = 0 ORDER BY e.id DESC LIMIT 50"
     )
-    .all() as Array<{ strategy: string; status: string; candidate: string; created_at: string; skill_name: string }>
+    .all() as Array<{ id: number; uuid: string; strategy: string; status: string; candidate: string; created_at: string; skill_name: string }>
+}
+
+/** Update a row identified by kind + id (uuid or numeric). Returns { ok, message } or throws. */
+function updateRow(kind: string | undefined, id: unknown, patch: Record<string, unknown>): { ok: boolean; message?: string } {
+  if (!kind || !id) throw new Error("params.kind and params.id required")
+  const db = getDb()
+  const ref = resolveRowId(kind, id)
+  if (!ref) throw new Error(`row #${id} not found in ${kind}`)
+  const ts = now()
+  switch (kind) {
+    case "memories": {
+      if (patch.content !== undefined) {
+        const res = memoryUpdateById(ref, { content: String(patch.content), scope: patch.scope !== undefined ? String(patch.scope) : undefined })
+        if (!res.ok) throw new Error(res.message)
+      }
+      return { ok: true }
+    }
+    case "skills": {
+      const s = db.query("SELECT * FROM skills WHERE id = ?").get(ref) as { name: string } | undefined
+      if (!s) throw new Error("skill not found")
+      if (patch.description !== undefined) skillPatch(s.name, "description", String(patch.description))
+      if (patch.body !== undefined) skillPatch(s.name, "body", String(patch.body))
+      return { ok: true }
+    }
+    case "rules":
+      if (patch.rule !== undefined)
+        db.query("UPDATE rules SET rule = ?, updated_at = ? WHERE id = ?").run(String(patch.rule), ts, ref)
+      return { ok: true }
+    case "goals":
+      if (patch.goal !== undefined)
+        db.query("UPDATE goals SET goal = ?, updated_at = ? WHERE id = ?").run(String(patch.goal), ts, ref)
+      if (patch.northStar !== undefined)
+        db.query("UPDATE goals SET north_star = ?, updated_at = ? WHERE id = ?").run(String(patch.northStar), ts, ref)
+      if (patch.completionCriteria !== undefined)
+        db.query("UPDATE goals SET completion_criteria = ?, updated_at = ? WHERE id = ?").run(String(patch.completionCriteria), ts, ref)
+      return { ok: true }
+    case "checkpoints": {
+      if (patch.notes !== undefined)
+        db.query("UPDATE checkpoints SET notes = ? WHERE id = ?").run(String(patch.notes), ref)
+      if (patch.status !== undefined)
+        db.query("UPDATE checkpoints SET status = ? WHERE id = ?").run(String(patch.status), ref)
+      return { ok: true }
+    }
+    case "evolution": {
+      if (patch.candidate !== undefined)
+        db.query("UPDATE evolution SET candidate = ?, rationale = COALESCE(rationale, ''), updated_at = ? WHERE id = ?").run(String(patch.candidate), ts, ref)
+      return { ok: true }
+    }
+    case "repairs": {
+      if (patch.draft !== undefined)
+        db.query("UPDATE repairs SET draft = ?, updated_at = ? WHERE id = ?").run(String(patch.draft), ts, ref)
+      return { ok: true }
+    }
+    case "patterns": {
+      if (patch.sig_label !== undefined)
+        db.query("UPDATE pattern_signatures SET sig_label = ? WHERE id = ?").run(String(patch.sig_label), ref)
+      return { ok: true }
+    }
+    case "observations":
+      if (patch.type !== undefined)
+        db.query("UPDATE observations SET type = ? WHERE id = ?").run(String(patch.type), ref)
+      return { ok: true }
+    case "workspaces":
+      if (patch.name !== undefined)
+        db.query("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?").run(String(patch.name), ts, ref)
+      if (patch.path !== undefined)
+        db.query("UPDATE workspaces SET path = ?, updated_at = ? WHERE id = ?").run(String(patch.path), ts, ref)
+      return { ok: true }
+    default:
+      throw new Error(`unknown kind: ${kind}`)
+  }
+}
+
+/** Soft-delete a row identified by kind + id. */
+function deleteRow(kind: string | undefined, id: unknown): { ok: boolean; message?: string } {
+  if (!kind || !id) throw new Error("params.kind and params.id required")
+  const db = getDb()
+  const ref = resolveRowId(kind, id)
+  if (!ref) throw new Error(`row #${id} not found in ${kind}`)
+  switch (kind) {
+    case "memories": {
+      const res = memoryArchiveById(ref)
+      if (!res.ok) throw new Error(res.message)
+      return { ok: true }
+    }
+    case "skills": {
+      const s = db.query("SELECT * FROM skills WHERE id = ?").get(ref) as { name: string } | undefined
+      if (!s) throw new Error("skill not found")
+      skillArchive(s.name)
+      return { ok: true }
+    }
+    case "goals":
+      db.query("UPDATE goals SET deleted = 1, updated_at = ? WHERE id = ?").run(now(), ref)
+      return { ok: true }
+    default:
+      db.query(`UPDATE ${kind} SET deleted = 1 WHERE id = ?`).run(ref)
+      return { ok: true }
+  }
+}
+
+/** Resolve a row id (uuid string or numeric) to the numeric PK for a kind. */
+function resolveRowId(kind: string, id: unknown): number {
+  const db = getDb()
+  if (typeof id === "number" || (typeof id === "string" && /^\d+$/.test(id))) return Number(id)
+  const cols = (db.query(`PRAGMA table_info(${kind})`).all() as Array<{ name: string }>).map((c) => c.name)
+  if (!cols.includes("deleted")) throw new Error(`table ${kind} has no soft-delete column`)
+  const col = kind === "patterns" ? "sig_hash" : "uuid"
+  const row = db.query(`SELECT id FROM ${kind} WHERE ${col} = ? AND deleted = 0`).get(String(id)) as { id: number } | undefined
+  if (!row) throw new Error(`row ${id} not found`)
+  return row.id
 }
 
 async function serveStatic(req: IncomingMessage, res: ServerResponse, url: string) {
@@ -416,7 +544,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, url: strin
   if (route === "/api/goals") return json(res, apiGoals())
   if (route === "/api/repairs") return json(res, apiRepairs())
   if (route === "/api/patterns") return json(res, apiPatterns())
-  if (route === "/api/workspaces") return json(res, workspaceList({ limit: 50 }))
+  if (route === "/api/workspaces") return json(res, apiWorkspacesData())
   if (route === "/api/rules") return json(res, apiRules())
   if (route === "/api/checkpoints") return json(res, apiCheckpoints())
   if (route === "/api/evolution") return json(res, apiEvolution())
@@ -580,7 +708,8 @@ const DASHBOARD_HTML = `<!doctype html>
   nav button.active .cnt { background:rgba(255,255,255,.22); color:var(--strong); }
   main { flex:1; padding:16px 22px; overflow-y:auto; min-width:0; }
   .tab-title { font-size:15px; color:var(--strong); margin:0 0 12px; }
-  .toolbar { display:flex; gap:8px; margin:-4px 0 12px; min-height:30px; }
+  .toolbar { display:flex; gap:8px; margin:-4px 0 12px; min-height:30px; align-items:center; }
+  .toolbar .tab-desc { color:var(--dim); font-size:12px; margin-right:auto; }
   .toolbar button.gen-btn { background:var(--acc); color:var(--strong); border:0; border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
   .toolbar button.gen-btn:hover { filter:brightness(1.1); }
   .pane { display:none; }
@@ -668,19 +797,23 @@ const GOAL_ZH = { active:"进行中", completed:"已完成", stopped:"已停止"
 const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差评", "user.preference":"用户偏好", manual:"手动", failure:"失败", success:"成功" };
 const COUNT_ZH = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", observations:"观测", repairs:"修复", patterns:"模式", workspaces:"工作区" };
 const TABS = [
-  { id:"memories", label:"记忆", key:"memories" },
-  { id:"skills", label:"技能", key:"skills", gen:{ method:"skills.create", prompt:"技能名称：", desc:"技能描述：", args:["name","description"] } },
-  { id:"rules", label:"规则", key:"rules", gen:{ method:"rules.create", prompt:"规则内容：", args:["rule"] } },
-  { id:"goals", label:"目标", key:"goals", gen:{ method:"goals.create", prompt:"目标：", desc:"北星目标（可选）：", args:["goal","northStar"] } },
-  { id:"checkpoints", label:"检查点", key:"checkpoints" },
-  { id:"evolution", label:"演进", key:"evolution", gen:{ method:"evolution.create", prompt:"技能名：", desc:"策略(harden/innovate/repair/generalize)：", args:["skill","strategy"] } },
-  { id:"daily", label:"每日总结", key:"daily", distill:true },
-  { id:"repairs", label:"修复草稿", key:"repairs", gen:{ method:"repairs.create", prompt:"工具名：", args:["tool"] } },
-  { id:"patterns", label:"模式候选", key:"patterns", gen:{ method:"patterns.record", prompt:"工具名：", args:["tool"] } },
-  { id:"observations", label:"观测", key:"observations" },
-  { id:"workspaces", label:"工作区", key:"workspaces" }
+  { id:"memories", label:"记忆", key:"memories", desc:"长期知识库，按强度分级，可编辑内容/删除(归档)" },
+  { id:"skills", label:"技能", key:"skills", desc:"可复用技术/工作流，candidate→active→archived", gen:{ method:"skills.create", prompt:"技能名称：", desc:"技能描述：", args:["name","description"] } },
+  { id:"rules", label:"规则", key:"rules", desc:"行为规则，可升级写入 AGENTS.md", gen:{ method:"rules.create", prompt:"规则内容：", args:["rule"] } },
+  { id:"goals", label:"目标", key:"goals", desc:"目标驱动循环，含检查点追踪", gen:{ method:"goals.create", prompt:"目标：", desc:"北星目标（可选）：", args:["goal","northStar"] } },
+  { id:"checkpoints", label:"检查点", key:"checkpoints", desc:"目标下 CP0..CP6.5 的阶段状态" },
+  { id:"evolution", label:"演进", key:"evolution", desc:"技能优化候选，待审后应用/拒绝", gen:{ method:"evolution.create", prompt:"技能名：", desc:"策略(harden/innovate/repair/generalize)：", args:["skill","strategy"] } },
+  { id:"daily", label:"每日总结", key:"daily", desc:"按天聚合的会话要点(蒸馏提取)", distill:true },
+  { id:"repairs", label:"修复草稿", key:"repairs", desc:"工具失败模式的修复建议", gen:{ method:"repairs.create", prompt:"工具名：", args:["tool"] } },
+  { id:"patterns", label:"模式候选", key:"patterns", desc:"重复失败模式，达阈值提升为记忆", gen:{ method:"patterns.record", prompt:"工具名：", args:["tool"] } },
+  { id:"observations", label:"观测", key:"observations", desc:"引擎事件日志(加载/review/蒸馏等)" },
+  { id:"workspaces", label:"工作区", key:"workspaces", desc:"访问过的工作目录指纹" }
 ];
 const TITLES = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", observations:"观测", workspaces:"工作区" };
+const KIND_EDIT_LABEL = {
+  skills:"编辑技能描述：", rules:"编辑规则内容：", goals:"编辑目标：", checkpoints:"编辑备注：", evolution:"编辑候选内容：", repairs:"编辑草稿内容：", patterns:"编辑签名：", observations:"编辑类型：", workspaces:"编辑名称："
+};
+const KIND_EDIT_FIELD = { skills:"description", rules:"rule", goals:"goal", checkpoints:"notes", evolution:"candidate", repairs:"draft", patterns:"sig_label", observations:"type", workspaces:"name" };
 function tierBadge(t, label){ return '<span class="tag t-' + t + '">' + esc(label || t) + "</span>"; }
 function statusBadge(s, label){ return '<span class="tag s-' + s + '">' + esc(label || s) + "</span>"; }
 function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
@@ -718,6 +851,12 @@ function updateToolbar(){
   const bar = document.getElementById("toolbar");
   if (!bar) return;
   bar.innerHTML = "";
+  if (tab && tab.desc) {
+    const d = document.createElement("span");
+    d.textContent = tab.desc;
+    d.className = "tab-desc";
+    bar.appendChild(d);
+  }
   if (tab && tab.gen) {
     const btn = document.createElement("button");
     btn.textContent = "生成";
@@ -732,6 +871,30 @@ function updateToolbar(){
     btn.addEventListener("click", () => distillNow());
     bar.appendChild(btn);
   }
+}
+async function editRow(kind, id, current, field){
+  const label = (KIND_EDIT_LABEL[kind] || "编辑内容：");
+  const v = prompt(label, current);
+  if (v === null || v === current) return;
+  try {
+    await rpc("data.update", { kind, id, [field]: v });
+    await boot();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+async function delRow(kind, id, label){
+  if (!confirm("删除" + (label || "这条") + "？")) return;
+  try {
+    await rpc("data.delete", { kind, id });
+    await boot();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+function rowAct(kind, id, label, current){
+  const field = KIND_EDIT_FIELD[kind];
+  return '<span class=act><button onclick="editRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(current || "") + "'" + ',' + "'" + (field || "") + "'" + ')">编辑</button><button class=del onclick="delRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(label || "") + "'" + ')">删除</button></span>';
 }
 async function genByTab(tab){
   const g = tab.gen;
@@ -789,26 +952,26 @@ async function boot(){
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
   else {
-    let h = "<div class=table-wrap><table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th></tr>";
-    for (const s of skills) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td></tr>";
+    let h = "<div class=table-wrap><table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th><th>操作</th></tr>";
+    for (const s of skills) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td><td>" + rowAct("skills", s.id, s.name, "") + "</td></tr>";
     skBox.innerHTML = h + "</table></div>";
   }
   const goBox = document.getElementById("goals");
-  goBox.innerHTML = goals.length ? "<div class=table-wrap><table><tr><th>目标</th><th>状态</th><th>项目</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(zh(GOAL_ZH, g.status, g.status)) + "</td><td class=muted>" + esc(g.project || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无目标</div>';
+  goBox.innerHTML = goals.length ? "<div class=table-wrap><table><tr><th>目标</th><th>状态</th><th>项目</th><th>操作</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(zh(GOAL_ZH, g.status, g.status)) + "</td><td class=muted>" + esc(g.project || "") + "</td><td>" + rowAct("goals", g.id, g.goal, g.goal) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无目标</div>';
   const rpBox = document.getElementById("repairs");
-  rpBox.innerHTML = repairs.length ? "<div class=table-wrap><table><tr><th>类型</th><th>触发</th><th>草稿</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(zh(REPAIR_ZH, r.kind, r.kind)) + "</td><td class=muted>" + esc(zh(REPAIR_ZH, r.trigger, r.trigger)) + "</td><td>" + esc(r.draft) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无</div>';
+  rpBox.innerHTML = repairs.length ? "<div class=table-wrap><table><tr><th>类型</th><th>触发</th><th>草稿</th><th>操作</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(zh(REPAIR_ZH, r.kind, r.kind)) + "</td><td class=muted>" + esc(zh(REPAIR_ZH, r.trigger, r.trigger)) + "</td><td>" + esc(r.draft) + "</td><td>" + rowAct("repairs", r.id, "修复", r.draft) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无</div>';
   const ptBox = document.getElementById("patterns");
-  ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
+  ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th><th>操作</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td><td>" + rowAct("patterns", p.id, "模式", p.sig) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
   const wsBox = document.getElementById("workspaces");
-  wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
+  wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th><th>操作</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td><td>" + rowAct("workspaces", w.id, w.name, w.name) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
   const obBox = document.getElementById("observations");
-  obBox.innerHTML = dash.observations && dash.observations.length ? "<div class=table-wrap><table><tr><th>类型</th><th>项目</th><th>时间</th></tr>" + dash.observations.slice(0, 50).map(o => "<tr><td>" + esc(o.type) + "</td><td class=muted>" + esc(o.project || "") + "</td><td class=muted>" + esc((o.created_at || "").slice(0,19)) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无观测</div>';
+  obBox.innerHTML = dash.observations && dash.observations.length ? "<div class=table-wrap><table><tr><th>类型</th><th>项目</th><th>时间</th><th>操作</th></tr>" + dash.observations.slice(0, 50).map(o => "<tr><td>" + esc(o.type) + "</td><td class=muted>" + esc(o.project || "") + "</td><td class=muted>" + esc((o.created_at || "").slice(0,19)) + "</td><td>" + rowAct("observations", o.id, "观测", o.type) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无观测</div>';
   const ruBox = document.getElementById("rules");
-  ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>规则</th><th>域</th><th>范围</th><th>次数</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:"全局", local:"本地" }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无规则</div>';
+  ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>规则</th><th>域</th><th>范围</th><th>次数</th><th>操作</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:"全局", local:"本地" }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td><td>" + rowAct("rules", r.uuid, "规则", r.rule) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无规则</div>';
   const cpBox = document.getElementById("checkpoints");
-  cpBox.innerHTML = checkpoints.length ? "<div class=table-wrap><table><tr><th>检查点</th><th>状态</th><th>目标</th><th>备注</th></tr>" + checkpoints.slice(0, 60).map(c => "<tr><td>" + esc(c.cp) + "</td><td>" + esc(zh({ done:"完成", pending:"待办", skipped:"跳过", failed:"失败" }, c.status, c.status)) + "</td><td class=muted>" + esc(c.goal || "") + "</td><td class=muted>" + esc(c.notes || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无检查点</div>';
+  cpBox.innerHTML = checkpoints.length ? "<div class=table-wrap><table><tr><th>检查点</th><th>状态</th><th>目标</th><th>备注</th><th>操作</th></tr>" + checkpoints.slice(0, 60).map(c => "<tr><td>" + esc(c.cp) + "</td><td>" + esc(zh({ done:"完成", pending:"待办", skipped:"跳过", failed:"失败" }, c.status, c.status)) + "</td><td class=muted>" + esc(c.goal || "") + "</td><td class=muted>" + esc(c.notes || "") + "</td><td>" + rowAct("checkpoints", c.uuid, "检查点", c.notes || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无检查点</div>';
   const evBox = document.getElementById("evolution");
-  evBox.innerHTML = evolution.length ? "<div class=table-wrap><table><tr><th>策略</th><th>状态</th><th>技能</th><th>候选</th></tr>" + evolution.slice(0, 30).map(e => "<tr><td>" + esc(zh({ harden:"加固", innovate:"创新", repair:"修复", generalize:"泛化" }, e.strategy, e.strategy)) + "</td><td>" + esc(zh({ pending:"待审", applied:"已应用", rejected:"已拒绝" }, e.status, e.status)) + "</td><td class=muted>" + esc(e.skill_name || "") + "</td><td>" + esc(e.candidate) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无演进候选</div>';
+  evBox.innerHTML = evolution.length ? "<div class=table-wrap><table><tr><th>策略</th><th>状态</th><th>技能</th><th>候选</th><th>操作</th></tr>" + evolution.slice(0, 30).map(e => "<tr><td>" + esc(zh({ harden:"加固", innovate:"创新", repair:"修复", generalize:"泛化" }, e.strategy, e.strategy)) + "</td><td>" + esc(zh({ pending:"待审", applied:"已应用", rejected:"已拒绝" }, e.status, e.status)) + "</td><td class=muted>" + esc(e.skill_name || "") + "</td><td>" + esc(e.candidate) + "</td><td>" + rowAct("evolution", e.uuid, "演进", e.candidate) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无演进候选</div>';
   // auto-seed empty categories once
   try {
     if (!localStorage.getItem("seeded")) {

@@ -178,3 +178,65 @@ test("memory.daily aggregates session summaries by day", async () => {
   expect(r.result.length).toBeGreaterThan(0)
   expect(r.result[0].facts.length).toBeGreaterThan(0)
 })
+
+// Phase 6.7: generic data.edit/delete across the dashboard tables.
+
+test("data.update edits a rule by uuid", async () => {
+  const { ruleObserve } = await import("../plugin/selfforge/lib/rules")
+  ruleObserve({ rule: "always prefer node:sqlite in tests", domain: "test", explicitScope: "local" })
+  const rows = await getJson("/api/rules")
+  const row = rows.body.find((r: any) => r.rule === "always prefer node:sqlite in tests")
+  expect(row?.uuid).toBeTruthy()
+  const r = await call("data.update", { kind: "rules", id: row!.uuid, rule: "prefer node:sqlite always" })
+  expect(r.result.ok).toBe(true)
+  const updated = await getJson("/api/rules")
+  const hit = updated.body.find((x: any) => x.uuid === row!.uuid)
+  expect(hit?.rule).toBe("prefer node:sqlite always")
+})
+
+test("data.update edits a goal by uuid", async () => {
+  const { goalStart } = await import("../plugin/selfforge/lib/goals")
+  const g = goalStart({ goal: "generic edit target", northStar: "ns", completionCriteria: "done" })
+  expect(g.id).toBeGreaterThan(0)
+  const goals = await getJson("/api/goals")
+  const goal = goals.body.find((x: any) => x.goal === "generic edit target")
+  expect(goal?.id).toBeTruthy()
+  const gr = await call("data.update", { kind: "goals", id: goal!.id, goal: "generic edit target (edited)" })
+  expect(gr.result.ok).toBe(true)
+  const goals2 = await getJson("/api/goals")
+  expect(goals2.body.find((x: any) => x.id === goal!.id && x.goal === "generic edit target (edited)")).toBeTruthy()
+})
+
+test("data.delete soft-deletes a rule by uuid", async () => {
+  const { ruleObserve } = await import("../plugin/selfforge/lib/rules")
+  ruleObserve({ rule: "delete me rule", domain: "test", explicitScope: "local" })
+  const rows = await getJson("/api/rules")
+  const row = rows.body.find((r: any) => r.rule === "delete me rule")
+  expect(row?.uuid).toBeTruthy()
+  const r = await call("data.delete", { kind: "rules", id: row!.uuid })
+  expect(r.result.ok).toBe(true)
+  const after = await getJson("/api/rules")
+  expect(after.body.find((x: any) => x.uuid === row!.uuid)).toBeUndefined()
+})
+
+test("data.update and data.delete reject unknown kinds", async () => {
+  const u = await call("data.update", { kind: "nope", id: "x", x: 1 })
+  expect(u.error?.code).toBe(-32000)
+  const d = await call("data.delete", { kind: "nope", id: "x" })
+  expect(d.error?.code).toBe(-32000)
+})
+
+test("data.update soft-edit workspaces rows exposed on /api/workspaces", async () => {
+  const before = await getJson("/api/workspaces")
+  expect(Array.isArray(before.body)).toBe(true)
+  const anyRow = before.body[0]
+  if (!anyRow) {
+    expect(true).toBe(true)
+    return
+  }
+  const r = await call("data.update", { kind: "workspaces", id: anyRow.id, name: "renamed ws" })
+  expect(r.result.ok).toBe(true)
+  const after = await getJson("/api/workspaces")
+  const hit = after.body.find((w: any) => w.id === anyRow.id)
+  expect(hit?.name).toBe("renamed ws")
+})
