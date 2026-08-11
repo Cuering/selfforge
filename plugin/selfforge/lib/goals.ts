@@ -126,6 +126,8 @@ export function goalCheckpoints(goalId: number): Checkpoint[] {
     .all(goalId) as Checkpoint[]
 }
 
+export function goalStatus(): Array<Goal & { checkpoints: Checkpoint[] }>
+export function goalStatus(goalId: number): (Goal & { checkpoints: Checkpoint[] }) | { error: string }
 export function goalStatus(goalId?: number) {
   if (goalId) {
     const g = getGoal(goalId)

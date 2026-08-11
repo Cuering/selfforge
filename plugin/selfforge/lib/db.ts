@@ -1,9 +1,64 @@
 ﻿/// <reference path="./bun-sqlite.d.ts" />
-import { Database } from "bun:sqlite"
 import { randomUUID } from "crypto"
 import { mkdirSync } from "fs"
 import { homedir } from "os"
 import { join } from "path"
+
+type Stmt = {
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+  run(...params: unknown[]): { lastInsertRowid: number | bigint; changes: number }
+}
+
+/** Cross-runtime DB interface: desktop (Node) and CLI (Bun) both expose .query(). */
+export interface Database {
+  exec(sql: string): void
+  query(sql: string): Stmt
+  close(): void
+}
+
+function createNodeDatabase(path: string): Database {
+  // @ts-ignore - node:sqlite is runtime-specific (desktop Electron bundles Node 22+)
+  const { DatabaseSync } = require("node:sqlite") as {
+    DatabaseSync: new (p: string) => {
+      exec(sql: string): void
+      prepare(sql: string): {
+        get(...a: unknown[]): unknown
+        all(...a: unknown[]): unknown[]
+        run(...a: unknown[]): { changes: number; lastInsertRowid: number | bigint }
+      }
+      close(): void
+    }
+  }
+  const raw = new DatabaseSync(path)
+  return {
+    exec: (sql: string) => raw.exec(sql),
+    query: (sql: string) => raw.prepare(sql),
+    close: () => raw.close(),
+  }
+}
+
+function createBunDatabase(path: string): Database {
+  // @ts-ignore - bun:sqlite is runtime-specific (CLI runs under Bun)
+  const { Database: B } = require("bun:sqlite") as {
+    Database: new (p: string, opts?: { create?: boolean }) => {
+      exec(sql: string): void
+      query(sql: string): Stmt
+      close(): void
+    }
+  }
+  return new B(path, { create: true })
+}
+
+function openDb(path: string): Database {
+  // @ts-ignore - Bun is a global in the Bun runtime only
+  if (typeof Bun !== "undefined") {
+    try {
+      return createBunDatabase(path)
+    } catch {}
+  }
+  return createNodeDatabase(path)
+}
 
 export const EVOLVE_HOME = process.env.EVOLVE_HOME || join(homedir(), ".evolve")
 export const DB_PATH = join(EVOLVE_HOME, "unified.db")
@@ -64,7 +119,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages (session_id);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS session_messages_fts USING fts5(content);
+-- session_messages_fts created in initDb (FTS5 where available, plain fallback otherwise)
 
 CREATE TABLE IF NOT EXISTS user_profile (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,8 +314,16 @@ export function initDb(): Database {
   mkdirSync(SKILLS_DIR, { recursive: true })
   mkdirSync(ARCHIVE_DIR, { recursive: true })
   mkdirSync(REVIEWS_DIR, { recursive: true })
-  db = new Database(DB_PATH, { create: true })
+  db = openDb(DB_PATH)
   db.exec(SCHEMA)
+  // FTS5 is bundled with Bun but not with Node's node:sqlite; degrade gracefully.
+  try {
+    db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS session_messages_fts USING fts5(content)")
+  } catch {
+    try {
+      db.exec("CREATE TABLE IF NOT EXISTS session_messages_fts (rowid INTEGER PRIMARY KEY, content TEXT)")
+    } catch {}
+  }
   migrate(db)
   return db
 }

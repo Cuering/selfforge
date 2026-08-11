@@ -176,6 +176,14 @@ A git repo holds `snapshot.json` as the shared truth. `team_sync` runs pull → 
 - `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/repairs`, `/api/patterns`, `/api/workspaces`).
 - `POST /` — the JSON-RPC surface above.
 
+### Integrated into OpenCode (v1.9)
+
+The plugin auto-starts the dashboard/RPC server in the background on load (`serve(9210)`, port-stepping on conflict), so the browser panel is always reachable. Inside OpenCode:
+
+- Type `/selfforge` — prints a terminal overview (memory/skill/goal/repair/pattern counts), and opens the browser panel on request.
+- Tools: `selfforge_status` returns a plain-text overview; `selfforge_dashboard` ensures the server is up and opens the browser; `selfforge_dashboard_stop` shuts it down.
+- Singleton serving: `serve()` is idempotent (no duplicate listeners) and `closeServer()` shuts down cleanly on plugin dispose.
+
 ## Metis-inspired memory (v1.8)
 
 Five capabilities adapted from the [MemTensor Metis](https://github.com/MemTensor/Metis) memory-foundation-model paper — `native memory state`, `learned utilization`, and `fixed-size session state` — kept deterministic and zero-LLM:
@@ -191,6 +199,14 @@ Five capabilities adapted from the [MemTensor Metis](https://github.com/MemTenso
 MIT
 
 ## Version history
+
+### v1.9.0 (2026-08-10) OpenCode UI integration
+
+- **Auto background server:** the plugin starts the dashboard/RPC server on load (`serve(9210)`, port-stepping on conflict), so `selfforge serve`'s panel is always available.
+- **`/selfforge` command:** an OpenCode global command prints a terminal overview (`selfforge_status`) and opens the browser panel when wanted (`selfforge_dashboard`); `selfforge_dashboard_stop` stops it.
+- **Terminal text overview:** new `dashboardText()` renders counts, recent memories, skills, goals, pending repairs and mature patterns without a network round trip.
+- **Singleton serving:** `serve()` is safe to call repeatedly (no duplicate listen); `closeServer()` shuts down on plugin dispose.
+- Tests: `tests/rpc.test.ts` adds `dashboardText` + `serve` singleton cases — full suite 101 pass.
 
 ### v1.8.0 (2026-08-10) Metis-inspired memory (native state, learned utilization, fixed-size state)
 

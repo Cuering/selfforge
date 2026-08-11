@@ -19,9 +19,11 @@ import { summaryTools } from "./selfforge/lib/tools/summary"
 import { evalTools } from "./selfforge/lib/tools/eval"
 import { transferTools } from "./selfforge/lib/tools/transfer"
 import { teamTools } from "./selfforge/lib/tools/team"
+import { dashboardTools } from "./selfforge/lib/tools/dashboard"
 import { recordSignal } from "./selfforge/lib/repair"
 import { touchWorkspace, scopeFor, fingerprintOf } from "./selfforge/lib/workspace"
 import { summarizeSession, getSessionSummary } from "./selfforge/lib/summary"
+import { serve, closeServer } from "./selfforge/lib/rpc"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -44,6 +46,12 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   } catch {}
   try {
     memoryDecay()
+  } catch {}
+
+  // Feature: auto-start the local dashboard/RPC server in the background so the
+  // browser dashboard and /selfforge command always have a live endpoint.
+  try {
+    void serve(9210)
   } catch {}
 
   const threshold = () => Number(getConfig("review_threshold", "5"))
@@ -259,6 +267,9 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
       try {
         closeDb()
       } catch {}
+      try {
+        closeServer()
+      } catch {}
     },
   }
 
@@ -277,6 +288,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     ...evalTools,
     ...transferTools,
     ...teamTools,
+    ...dashboardTools,
   }
 
   return { ...hooks, tool: tools }

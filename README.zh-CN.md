@@ -159,6 +159,14 @@ git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐
 - `GET /api/*`——JSON端点（`/api/dashboard`、`/api/memories`、`/api/skills`、`/api/goals`、`/api/repairs`、`/api/patterns`、`/api/workspaces`）。
 - `POST /`——上述JSON-RPC接口。
 
+### OpenCode内集成（v1.9）
+
+插件加载时自动在后台拉起仪表盘服务（`serve(9210)`，端口被占用时自动避让），浏览器随时可开。在OpenCode中：
+
+- 输入`/selfforge`——先输出终端文字概览（记忆/技能/目标/修复/模式计数），需要时打开浏览器面板。
+- 工具`selfforge_status`返回纯文本概览；`selfforge_dashboard`拉起服务并打开浏览器；`selfforge_dashboard_stop`停止服务。
+- 服务单例化：`serve()`可重复调用而不重复监听，插件卸载时`closeServer()`优雅关闭。
+
 ## Metis式记忆（v1.8）
 
 借鉴自[MemTensor Metis](https://github.com/MemTensor/Metis)记忆基础模型论文的五个能力——`原生记忆状态`、`习得化利用`、`固定大小会话状态`——全部保持确定性与零LLM：
@@ -170,6 +178,14 @@ git仓库持有`snapshot.json`作为共享真值。`team_sync`执行拉取→逐
 - **召回评测基准（`memory_eval`/`selfforge eval`）：**播种已知样例集，对一组正负查询报告precision@k，让召回退化可见。
 
 ## 版本更新说明
+
+### v1.9.0（2026-08-10）OpenCode UI集成
+
+- **自动后台服务：**插件加载时自动启动本地仪表盘/RPC服务（`serve(9210)`，端口占用自动避让），`selfforge serve`面板随时可用。
+- **`/selfforge`命令：**OpenCode全局命令，先输出终端文字概览（`selfforge_status`），需要时打开浏览器面板（`selfforge_dashboard`）；`selfforge_dashboard_stop`停止服务。
+- **终端文字概览：**新增`dashboardText()`，直接渲染计数、近期记忆、技能、目标、待处理修复与成熟模式，无需网络与进程。
+- **服务单例化：**`serve()`可重复调用而不会重复监听；`closeServer()`在插件卸载时优雅关闭。
+- 测试：`tests/rpc.test.ts`新增`dashboardText`与`serve`单例用例——全量101通过。
 
 ### v1.8.0（2026-08-10）Metis式记忆（原生状态、习得化利用、固定大小状态）
 

@@ -10,7 +10,7 @@
  *
  * The core engine has zero opencode dependency, so this CLI works on any
  * machine with bun, pointing at an explicit EVOLVE_HOME (defaults to
- * ~/.config/opencode or $EVOLVE_HOME).
+ * ~/.evolve or $EVOLVE_HOME — same default as the plugin's db.ts).
  */
 import { homedir } from "os"
 import { join } from "path"
@@ -27,7 +27,7 @@ function opt(name: string, fallback: string): string {
 function resolveHome(): string {
   const env = opt("--home", process.env.EVOLVE_HOME || "")
   if (env) return env
-  return join(homedir(), ".config", "opencode")
+  return join(homedir(), ".evolve")
 }
 
 function help() {

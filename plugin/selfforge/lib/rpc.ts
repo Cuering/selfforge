@@ -111,6 +111,70 @@ function apiStatus() {
   return { ...transferStatus(), format: SNAPSHOT_FORMAT }
 }
 
+/** Single active dashboard/RPC server (spawned by the plugin or CLI, never duplicated). */
+let activeServer: import("node:http").Server | null = null
+
+export function closeServer(): void {
+  if (activeServer) {
+    try {
+      activeServer.close()
+    } catch {}
+    activeServer = null
+  }
+}
+
+/** Plain-text overview of the engine, rendered from the same data as the JSON APIs. */
+export function dashboardText(): string {
+  const d = apiDashboard()
+  const lines: string[] = []
+  lines.push("# selfforge")
+  lines.push(
+    `node ${d.status.node_id}   clock ${d.status.clock}   ${d.status.home || d.status.db_path}`
+  )
+  lines.push("")
+  const counts = Object.entries(d.counts)
+  if (counts.length) {
+    lines.push("## counts")
+    for (const [k, v] of counts) lines.push(`- ${k}: ${v}`)
+    lines.push("")
+  }
+  const memories = apiMemories()
+  if (memories.length) {
+    lines.push("## memories")
+    for (const m of memories.slice(0, 25)) {
+      const meta = [m.tier, m.lifecycle, m.scope || ""].filter(Boolean).join("/")
+      lines.push(`- [${meta}] (${String(m.strength ?? "")}) ${m.content.slice(0, 120)}`)
+    }
+    lines.push("")
+  }
+  const skills = apiSkills()
+  if (skills.length) {
+    lines.push("## skills")
+    for (const s of skills.slice(0, 25)) lines.push(`- ${s.name} (${s.status}, trials ${s.passed}/${s.trials})`)
+    lines.push("")
+  }
+  const goals = apiGoals()
+  if (goals.length) {
+    lines.push("## goals")
+    for (const g of goals.slice(0, 25)) lines.push(`- [${g.status}] ${g.goal}${g.project ? `  (${g.project})` : ""}`)
+    lines.push("")
+  }
+  const repairs = apiRepairs()
+  if (repairs.length) {
+    lines.push("## pending repairs")
+    for (const r of repairs.slice(0, 15)) lines.push(`- [${r.kind}] ${r.draft.slice(0, 120)}`)
+    lines.push("")
+  }
+  const patterns = apiPatterns()
+  if (patterns.length) {
+    lines.push("## mature patterns")
+    for (const p of patterns.slice(0, 15)) lines.push(`- ${p.sig}${p.tool ? ` (${p.tool})` : ""} x${p.episodes}`)
+    lines.push("")
+  }
+  lines.push("Visual dashboard: `selfforge serve` then open the served URL in a browser.")
+  return lines.join("\n")
+}
+
 function apiMemories() {
   return memoryList({ limit: 500, archived: false }).map((m) => ({
     id: m.uuid,
@@ -200,7 +264,8 @@ function json(res: ServerResponse, data: unknown) {
   res.end(JSON.stringify(data, null, 2))
 }
 
-export async function serve(port = 9210): Promise<void> {
+export async function serve(port = 9210): Promise<number> {
+  if (activeServer) return activeServerPort() || port
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     res.setHeader("Access-Control-Allow-Origin", "*")
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -243,9 +308,32 @@ export async function serve(port = 9210): Promise<void> {
       res.end(JSON.stringify(rpcError(null, -32700, (err as Error).message)))
     }
   })
-  server.listen(port, () => {
-    console.log(`selfforge serve: http://127.0.0.1:${port}  (dashboard /, JSON-RPC POST /)`)
+  activeServer = server
+  await new Promise<void>((resolve, reject) => {
+    const tryListen = (p: number) => {
+      server.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && p < port + 64) {
+          tryListen(p + 1)
+        } else {
+          activeServer = null
+          reject(err)
+        }
+      })
+      server.listen(p, () => {
+        resolve()
+      })
+    }
+    tryListen(port)
   })
+  const actual = activeServerPort() || port
+  console.log(`selfforge serve: http://127.0.0.1:${actual}  (dashboard /, JSON-RPC POST /)`)
+  return actual
+}
+
+function activeServerPort(): number | null {
+  if (!activeServer) return null
+  const addr = activeServer.address()
+  return typeof addr === "object" && addr ? addr.port : null
 }
 
 /** For tests: spin a server on an ephemeral port and run JSON-RPC/API round-trips. */

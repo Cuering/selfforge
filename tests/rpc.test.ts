@@ -122,3 +122,27 @@ test("unknown API path returns 404", async () => {
   const res = await fetch(`http://127.0.0.1:${port}/api/nope`)
   expect(res.status).toBe(404)
 })
+
+// Phase 6: dashboard text overview + singleton serve (auto-spawned by the plugin).
+
+test("dashboardText renders engine overview with counts and memories", async () => {
+  const rpc = await import("../plugin/selfforge/lib/rpc")
+  const text = rpc.dashboardText()
+  expect(text).toContain("selfforge")
+  expect(text).toContain("## counts")
+  expect(text).toContain("memories")
+  expect(text).toContain("rpc roundtrip lesson")
+})
+
+test("serve starts a singleton dashboard server and serves HTML", async () => {
+  const rpc = await import("../plugin/selfforge/lib/rpc")
+  const p1 = await rpc.serve(0)
+  const res = await fetch(`http://127.0.0.1:${p1}/`)
+  expect(res.status).toBe(200)
+  const html = await res.text()
+  expect(html).toContain("selfforge")
+  // second call reuses the same server (no port escalation / no duplicate listen)
+  const p2 = await rpc.serve(0)
+  expect(p2).toBe(p1)
+  rpc.closeServer()
+})
