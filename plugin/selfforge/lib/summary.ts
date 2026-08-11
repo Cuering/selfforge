@@ -131,3 +131,35 @@ export function renderSessionState(sessionId: string): string | null {
   if (!s || !s.summary) return null
   return `## Session State\n\n<!-- fixed-size session summary (distilled, not a transcript replay) -->\n${s.summary}\n`
 }
+
+/** Aggregate session summaries by calendar day (UTC), newest first. */
+export function dailySummaries(opts?: { limit?: number }): Array<{
+  day: string
+  session_count: number
+  fact_count: number
+  facts: string[]
+}> {
+  const rows = sessionSummaryList({ limit: 500 })
+  const byDay = new Map<string, { sessions: Set<string>; facts: string[] }>()
+  for (const s of rows) {
+    const day = (s.updated_at || "").slice(0, 10)
+    if (!day) continue
+    let bucket = byDay.get(day)
+    if (!bucket) {
+      bucket = { sessions: new Set(), facts: [] }
+      byDay.set(day, bucket)
+    }
+    bucket.sessions.add(s.session_id)
+    for (const line of (s.summary || "").split("\n")) {
+      const fact = line.replace(/^\d+\.\s*/, "").trim()
+      if (fact) bucket.facts.push(fact)
+    }
+  }
+  const out: Array<{ day: string; session_count: number; fact_count: number; facts: string[] }> = []
+  for (const [day, b] of byDay.entries()) {
+    const facts = [...new Set(b.facts)]
+    out.push({ day, session_count: b.sessions.size, fact_count: facts.length, facts: facts.slice(0, 20) })
+  }
+  out.sort((a, b) => (a.day < b.day ? 1 : -1))
+  return out.slice(0, opts?.limit ?? 14)
+}

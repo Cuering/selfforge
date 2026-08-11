@@ -263,6 +263,69 @@ export function memoryRemove(keyword: string) {
   return { archived: rows.length, ids: rows.map((r) => r.id) }
 }
 
+/** Edit a memory by id: content, scope, importance, confidence, status, lifecycle. */
+export function memoryUpdateById(
+  id: number,
+  patch: {
+    content?: string
+    scope?: string | null
+    importance?: number
+    confidence?: number
+    status?: "confirmed" | "candidate"
+    lifecycle?: Lifecycle
+  }
+): { ok: boolean; message?: string; memory?: Memory } {
+  const db = getDb()
+  const r = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
+  if (!r) return { ok: false, message: `No memory with id ${id}` }
+  if (patch.content !== undefined) {
+    const blocked = isBlockedMemoryContent(patch.content)
+    if (blocked.blocked) return { ok: false, message: `Rejected: ${blocked.reason}` }
+  }
+  const sets: string[] = []
+  const params: unknown[] = []
+  if (patch.content !== undefined && patch.content !== r.content) {
+    sets.push("content = ?")
+    params.push(patch.content)
+  }
+  if (patch.scope !== undefined) {
+    sets.push("scope = ?")
+    params.push(patch.scope || null)
+  }
+  if (patch.importance !== undefined) {
+    sets.push("importance = ?")
+    params.push(patch.importance)
+  }
+  if (patch.confidence !== undefined) {
+    sets.push("confidence = ?")
+    params.push(patch.confidence)
+  }
+  if (patch.status !== undefined) {
+    sets.push("status = ?")
+    params.push(patch.status)
+  }
+  if (patch.lifecycle !== undefined) {
+    sets.push("lifecycle = ?")
+    params.push(patch.lifecycle)
+  }
+  if (sets.length === 0) {
+    return { ok: false, message: "Nothing to update" }
+  }
+  sets.push("updated_at = ?")
+  params.push(now())
+  db.query(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`).run(...params, id)
+  return { ok: true, memory: db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory }
+}
+
+/** Archive(soft-delete) a single memory by id. */
+export function memoryArchiveById(id: number): { ok: boolean; message?: string } {
+  const db = getDb()
+  const r = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
+  if (!r) return { ok: false, message: `No memory with id ${id}` }
+  db.query("UPDATE memories SET archived = 1, deleted = 1, updated_at = ? WHERE id = ?").run(now(), id)
+  return { ok: true }
+}
+
 export function memorySummary(): { hot: number; warm: number; cold: number; evictable: number } {
   const rows = getDb()
     .query("SELECT tier, COUNT(*) AS n FROM memories WHERE archived = 0 GROUP BY tier")

@@ -2,7 +2,8 @@ import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { getDb, nodeId, clock, advanceClockTo } from "./db"
 import { exportSnapshot, importSnapshot, transferStatus, SNAPSHOT_FORMAT } from "./transfer"
-import { memoryList } from "./memory"
+import { memoryList, memoryUpdateById, memoryArchiveById } from "./memory"
+import { dailySummaries } from "./summary"
 import { skillList, skillStatus } from "./skills"
 import { workspaceList } from "./workspace"
 import { goalStatus } from "./goals"
@@ -18,6 +19,9 @@ import { patternCandidates } from "./patterns"
  * Methods (JSON-RPC 2.0 over HTTP POST):
  *   status            -> node id, clock, db path
  *   memory.list       -> latest memories
+ *   memory.update     -> edit a memory by id (content/scope/importance/confidence/status/lifecycle)
+ *   memory.delete     -> archive(删除) a memory by id
+ *   memory.daily      -> session summaries aggregated by day
  *   skills.list       -> skills + lifecycle status
  *   workspaces.list   -> known workspaces
  *   goals.list        -> active goals
@@ -67,6 +71,29 @@ async function handle(method: string, params: any): Promise<any> {
         created_at: m.created_at,
       }))
     }
+    case "memory.update": {
+      const mem = findMemoryById(params?.id)
+      if (!mem) throw new Error("params.id required (id or uuid)")
+      const res = memoryUpdateById(mem.id, {
+        content: params?.content,
+        scope: params?.scope,
+        importance: params?.importance !== undefined ? Number(params.importance) : undefined,
+        confidence: params?.confidence !== undefined ? Number(params.confidence) : undefined,
+        status: params?.status,
+        lifecycle: params?.lifecycle,
+      })
+      if (!res.ok) throw new Error(res.message)
+      return { ok: true, id: mem.uuid }
+    }
+    case "memory.delete": {
+      const mem = findMemoryById(params?.id)
+      if (!mem) throw new Error("params.id required (id or uuid)")
+      const res = memoryArchiveById(mem.id)
+      if (!res.ok) throw new Error(res.message)
+      return { ok: true, id: mem.uuid }
+    }
+    case "memory.daily":
+      return dailySummaries({ limit: Number(params?.limit ?? 14) })
     case "skills.list": {
       const list = skillList({ includeDeleted: false }).map((s) => ({
         id: s.uuid,
@@ -104,6 +131,16 @@ async function handle(method: string, params: any): Promise<any> {
     default:
       throw new Error(`unknown method: ${method}`)
   }
+}
+
+/** Resolve a memory by numeric id or uuid (from the full active list). */
+function findMemoryById(ref: unknown) {
+  const all = memoryList({ limit: 100000, archived: false })
+  if (typeof ref === "number" || (typeof ref === "string" && /^\d+$/.test(ref))) {
+    const n = Number(ref)
+    return all.find((m) => m.id === n)
+  }
+  return all.find((m) => m.uuid === ref)
 }
 
 /** JSON API used by the single-page dashboard (Phase 5). */
@@ -400,6 +437,15 @@ const DASHBOARD_HTML = `<!doctype html>
   .muted { color:var(--dim); }
   pre { margin:0; padding:10px 12px; overflow:auto; max-height:300px; font-size:11px; }
   .empty { padding:14px; color:var(--dim); font-size:12px; }
+  .scroll { max-height:480px; overflow-y:auto; }
+  td .act { display:inline-flex; gap:4px; margin-left:6px; }
+  td .act button { background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:4px; padding:1px 7px; font-size:11px; cursor:pointer; }
+  td .act button:hover { color:#fff; border-color:var(--acc); }
+  td .act button.del:hover { border-color:var(--bad); color:var(--bad); }
+  .daycard { padding:12px; font-size:12px; }
+  .daycard h3 { margin:0 0 4px; font-size:13px; color:#fff; }
+  .daycard .meta { color:var(--dim); font-size:11px; margin-bottom:6px; }
+  .daycard ul { margin:0; padding-left:18px; }
 </style>
 </head>
 <body>
@@ -410,7 +456,8 @@ const DASHBOARD_HTML = `<!doctype html>
 </header>
 <main>
   <section><h2>概览</h2><div class="cards" id="counts"></div></section>
-  <section><h2>记忆</h2><div id="memories"><div class="empty">加载中…</div></div></section>
+  <section><h2>记忆</h2><div class="scroll" id="memories"><div class="empty">加载中…</div></div></section>
+  <section><h2>每日总结</h2><div class="scroll" id="daily"><div class="empty">加载中…</div></div></section>
   <section><h2>技能</h2><div id="skills"><div class="empty">加载中…</div></div></section>
   <section><h2>目标</h2><div id="goals"><div class="empty">加载中…</div></div></section>
   <section><h2>待决策修复</h2><div id="repairs"><div class="empty">加载中…</div></div></section>
@@ -419,36 +466,75 @@ const DASHBOARD_HTML = `<!doctype html>
 <script>
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 async function get(p){ const r = await fetch(p); return r.json(); }
+async function rpc(method, params){
+  const r = await fetch("/", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ jsonrpc:"2.0", id:1, method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+}
+const TIER_ZH = { hot:"热", warm:"温", cold:"冷", evictable:"可淘汰" };
+const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归档", stale:"过期", active:"活跃" };
+const LIFECYCLE_ZH = { temporary:"临时", active:"活跃", permanent:"长期", archived:"已归档" };
+const GOAL_ZH = { active:"进行中", completed:"已完成", stopped:"已停止" };
+const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差评", "user.preference":"用户偏好", manual:"手动", failure:"失败", success:"成功" };
+const PT_HEAD_ZH = { signature:"签名", tool:"工具", err_code:"错误码", episodes:"次数" };
 function tierClass(t){ return "tag t-" + t; }
 function statusClass(s){ return "tag s-" + s; }
+function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
+function memRow(m){
+  const id = m.uuid || m.id;
+  const tag = tierClass(m.tier) + zh(TIER_ZH, m.tier);
+  const act = "<span class=act><button onclick=\"editMem('" + id + "')\">编辑</button><button class=del onclick=\"delMem('" + id + "')\">删除</button></span>";
+  return "<tr><td>" + tag + m.strength + "</td><td>" + esc(m.content) + "</td><td class=muted>" + esc(m.scope || "") + "</td><td class=muted>" + esc((m.created_at || "").slice(0,10)) + "</td><td class=muted>" + act + "</td></tr>";
+}
+let editingId = null;
+async function editMem(id){
+  const m = (memoriesById || {})[id];
+  if (!m) return;
+  const v = prompt("编辑记忆内容：", m.content);
+  if (v === null) return;
+  await rpc("memory.update", { id, content: v }).then(() => boot()).catch((e) => alert(e.message));
+}
+window.editMem = editMem;
+async function delMem(id){
+  if (!confirm("删除这条记忆？")) return;
+  await rpc("memory.delete", { id }).then(() => boot()).catch((e) => alert(e.message));
+}
+window.delMem = delMem;
+let memoriesById = {};
 async function boot(){
-  const [dash, memories, skills, goals, repairs, patterns] = await Promise.all([
-    get("/api/dashboard"), get("/api/memories"), get("/api/skills"), get("/api/goals"), get("/api/repairs"), get("/api/patterns")
+  const [dash, memories, skills, goals, repairs, patterns, daily] = await Promise.all([
+    get("/api/dashboard"), get("/api/memories"), get("/api/skills"), get("/api/goals"), get("/api/repairs"), get("/api/patterns"),
+    rpc("memory.daily", { limit: 14 })
   ]);
+  memoriesById = {};
+  for (const m of memories) memoriesById[m.uuid || m.id] = m;
   const st = dash.status;
-  document.getElementById("sub").textContent = "node " + st.node_id + " · clock " + st.clock + " · " + (st.home || st.db_path);
+  document.getElementById("sub").textContent = "节点 " + st.node_id + " · 时钟 " + st.clock + " · " + (st.home || st.db_path);
   const counts = dash.counts;
-  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + k + "</span></div>").join("");
+  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh({ memories:"记忆", skills:"技能", goals:"目标", repairs:"修复", patterns:"模式", workspaces:"工作区" }, k, k) + "</span></div>").join("");
   const memBox = document.getElementById("memories");
   if (!memories.length) memBox.innerHTML = '<div class="empty">暂无记忆</div>';
   else {
-    let h = "<table><tr><th>强度</th><th>内容</th><th>作用域</th><th>时间</th></tr>";
-    for (const m of memories.slice(0, 30)) h += "<tr><td>" + tierClass(m.tier) + m.strength + "</td><td>" + esc(m.content) + "</td><td class=muted>" + esc(m.scope || "") + "</td><td class=muted>" + esc((m.created_at || "").slice(0,10)) + "</td></tr>";
+    let h = "<table><tr><th>强度</th><th>内容</th><th>作用域</th><th>时间</th><th>操作</th></tr>";
+    for (const m of memories) h += memRow(m);
     memBox.innerHTML = h + "</table>";
   }
+  const dlBox = document.getElementById("daily");
+  dlBox.innerHTML = daily && daily.length ? daily.map((d) => "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条要点</div><ul>" + d.facts.map((f) => "<li>" + esc(f) + "</li>").join("") + "</ul></div>").join("") : '<div class="empty">暂无总结</div>';
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
   else {
     let h = "<table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th></tr>";
-    for (const s of skills.slice(0, 30)) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusClass(s.status) + s.status + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td></tr>";
+    for (const s of skills) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusClass(s.status) + zh(STATUS_ZH, s.status) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td></tr>";
     skBox.innerHTML = h + "</table>";
   }
   const goBox = document.getElementById("goals");
-  goBox.innerHTML = goals.length ? "<table><tr><th>目标</th><th>状态</th><th>项目</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(g.status) + "</td><td class=muted>" + esc(g.project || "") + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无目标</div>';
+  goBox.innerHTML = goals.length ? "<table><tr><th>目标</th><th>状态</th><th>项目</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(zh(GOAL_ZH, g.status, g.status)) + "</td><td class=muted>" + esc(g.project || "") + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无目标</div>';
   const rpBox = document.getElementById("repairs");
-  rpBox.innerHTML = repairs.length ? "<table><tr><th>类型</th><th>触发</th><th>草稿</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(r.kind) + "</td><td class=muted>" + esc(r.trigger || "") + "</td><td>" + esc(r.draft) + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无</div>';
+  rpBox.innerHTML = repairs.length ? "<table><tr><th>类型</th><th>触发</th><th>草稿</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(zh(REPAIR_ZH, r.kind, r.kind)) + "</td><td class=muted>" + esc(zh(REPAIR_ZH, r.trigger, r.trigger)) + "</td><td>" + esc(r.draft) + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无</div>';
   const ptBox = document.getElementById("patterns");
-  ptBox.innerHTML = patterns.length ? "<table><tr><th>签名</th><th>工具</th><th>错误码</th><th>episodes</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无成熟候选</div>';
+  ptBox.innerHTML = patterns.length ? "<table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td></tr>").join("") + "</table>" : '<div class="empty">暂无成熟候选</div>';
 }
 boot().catch(e => document.body.insertAdjacentHTML("beforeend", "<pre>" + esc(e.stack) + "</pre>"));
 </script>

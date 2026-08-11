@@ -146,3 +146,35 @@ test("serve starts a singleton dashboard server and serves HTML", async () => {
   expect(p2).toBe(p1)
   rpc.closeServer()
 })
+
+// Phase 6.5: dashboard memory editing/deletion + daily summaries.
+
+test("memory.update edits a memory by id/uuid", async () => {
+  const { memoryAdd, memoryList } = await import("../plugin/selfforge/lib/memory")
+  const added = memoryAdd("memory update target", { status: "confirmed" })
+  const row = memoryList({ limit: 100 }).find((m) => m.content === "memory update target")
+  expect(row).toBeTruthy()
+  const r = await call("memory.update", { id: row!.uuid, content: "memory update target (edited)" })
+  expect(r.result.ok).toBe(true)
+  const after = memoryList({ limit: 100 }).find((m) => m.uuid === row!.uuid)
+  expect(after?.content).toBe("memory update target (edited)")
+})
+
+test("memory.delete archives a memory by id/uuid", async () => {
+  const { memoryAdd, memoryList } = await import("../plugin/selfforge/lib/memory")
+  memoryAdd("memory delete target", { status: "confirmed" })
+  const row = memoryList({ limit: 100 }).find((m) => m.content === "memory delete target")
+  expect(row).toBeTruthy()
+  const r = await call("memory.delete", { id: row!.uuid })
+  expect(r.result.ok).toBe(true)
+  const after = memoryList({ limit: 100 }).find((m) => m.uuid === row!.uuid)
+  expect(after).toBeUndefined()
+})
+
+test("memory.daily aggregates session summaries by day", async () => {
+  const { summarizeSession } = await import("../plugin/selfforge/lib/summary")
+  summarizeSession("sess-a", [{ role: "user", content: "we prefer node:sqlite for the desktop plugin" }])
+  const r = await call("memory.daily", { limit: 7 })
+  expect(r.result.length).toBeGreaterThan(0)
+  expect(r.result[0].facts.length).toBeGreaterThan(0)
+})
