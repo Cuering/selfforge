@@ -540,7 +540,13 @@ function apiDashboard() {
 }
 
 function apiGoals() {
-  return goalStatus().map((g) => ({ id: g.uuid, goal: g.goal, status: g.status, project: g.project, updated_at: g.updated_at }))
+  // Dashboard count cards count every non-deleted goal (completed/stopped
+  // included), so the list must show the same universe or the panel feels
+  // empty while the badge says e.g. "4".
+  return getDb()
+    .query("SELECT id, uuid, goal, status, project, created_at, updated_at FROM goals WHERE deleted = 0 ORDER BY updated_at DESC LIMIT 100")
+    .all()
+    .map((g: any) => ({ id: g.uuid, goal: g.goal, status: g.status, project: g.project, updated_at: g.updated_at }))
 }
 
 function apiRules() {
