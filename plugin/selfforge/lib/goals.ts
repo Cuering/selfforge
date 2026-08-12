@@ -96,7 +96,7 @@ export function getGoal(id: number): Goal | undefined {
 export function goalCheckpoint(opts: { goalId: number; cp: string; status?: string; notes?: string }) {
   const db = getDb()
   const existing = db
-    .query("SELECT * FROM checkpoints WHERE goal_id = ? AND cp = ?")
+    .query("SELECT * FROM checkpoints WHERE goal_id = ? AND cp = ? AND deleted = 0")
     .get(opts.goalId, opts.cp) as Checkpoint | undefined
   const status = opts.status ?? "done"
   if (existing) {
@@ -106,10 +106,24 @@ export function goalCheckpoint(opts: { goalId: number; cp: string; status?: stri
       existing.id
     )
   } else {
-    const st = stamp()
-    db.query(
-      "INSERT INTO checkpoints (uuid, origin, goal_id, cp, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(st.uuid, st.origin, opts.goalId, opts.cp, status, opts.notes ?? null, now())
+    // A soft-deleted row for the same CP must be revived (not re-inserted),
+    // otherwise we get a duplicate CP after maintainCheckpoints tombstones it.
+    const tomb = db
+      .query("SELECT * FROM checkpoints WHERE goal_id = ? AND cp = ? ORDER BY id ASC LIMIT 1")
+      .get(opts.goalId, opts.cp) as Checkpoint | undefined
+    if (tomb) {
+      db.query("UPDATE checkpoints SET deleted = 0, status = ?, notes = ?, created_at = ? WHERE id = ?").run(
+        status,
+        opts.notes ?? null,
+        now(),
+        tomb.id
+      )
+    } else {
+      const st = stamp()
+      db.query(
+        "INSERT INTO checkpoints (uuid, origin, goal_id, cp, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(st.uuid, st.origin, opts.goalId, opts.cp, status, opts.notes ?? null, now())
+    }
   }
   if (opts.cp === "CP3") {
     db.query("UPDATE goals SET iteration = iteration + 1, updated_at = ? WHERE id = ?").run(
@@ -122,7 +136,7 @@ export function goalCheckpoint(opts: { goalId: number; cp: string; status?: stri
 
 export function goalCheckpoints(goalId: number): Checkpoint[] {
   return getDb()
-    .query("SELECT * FROM checkpoints WHERE goal_id = ? ORDER BY id")
+    .query("SELECT * FROM checkpoints WHERE goal_id = ? AND deleted = 0 ORDER BY id")
     .all(goalId) as Checkpoint[]
 }
 
@@ -174,27 +188,26 @@ export function goalAdvisory(): string | null {
  */
 export function maintainCheckpoints(): { removed: number; remaining_active: number; remaining_pending: number } {
   const db = getDb()
-  const ts = now()
 
   // 1. Completed checkpoints: remove (goal progress is captured in status already).
   const done = db
-    .query("UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND status = 'done'")
-    .run(ts)
+    .query("UPDATE checkpoints SET deleted = 1 WHERE deleted = 0 AND status = 'done'")
+    .run()
 
   // 2. Checkpoints belonging to goals that are no longer active (or were deleted).
   const orphaned = db
     .query(
-      "UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE deleted = 1 OR status != 'active')"
+      "UPDATE checkpoints SET deleted = 1 WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE deleted = 1 OR status != 'active')"
     )
-    .run(ts)
+    .run()
 
   // 3. Active goals that have already reached their max iterations: their
   //    remaining pending checkpoints are not actionable either.
   const exhausted = db
     .query(
-      "UPDATE checkpoints SET deleted = 1, created_at = ? WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE status = 'active' AND iteration >= max_iterations)"
+      "UPDATE checkpoints SET deleted = 1 WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE status = 'active' AND iteration >= max_iterations)"
     )
-    .run(ts)
+    .run()
 
   const removed = Number(done.changes) + Number(orphaned.changes) + Number(exhausted.changes)
   const remaining_active = (
