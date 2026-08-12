@@ -155,8 +155,32 @@ export function goalStatus(goalId?: number) {
 }
 
 export function goalComplete(goalId: number) {
-  getDb().query("UPDATE goals SET status = 'completed', updated_at = ? WHERE id = ?").run(now(), goalId)
+  const db = getDb()
+  const g = getGoal(goalId)
+  db.query("UPDATE goals SET status = 'completed', updated_at = ? WHERE id = ?").run(now(), goalId)
+  // A finished goal means its project's activity is done: clear the audit log
+  // for that project once no other goal is still active there.
+  if (g?.project) {
+    const stillActive = db
+      .query("SELECT COUNT(*) AS n FROM goals WHERE deleted = 0 AND status = 'active' AND project = ?")
+      .get(g.project) as { n: number }
+    if (stillActive.n === 0) {
+      const keys = projectObsKeys(g.project)
+      const ph = keys.map(() => "?").join(",")
+      db.query(`UPDATE observations SET deleted = 1 WHERE deleted = 0 AND project IN (${ph})`).run(...keys)
+    }
+  }
   return getGoal(goalId)
+}
+
+/** Candidate project spellings for observation cleanup (drive-letter/path-separator variants). */
+function projectObsKeys(p: string): string[] {
+  const keys = new Set([p])
+  const base = p.replace(/^[a-zA-Z]:[\\/]+/, "").replace(/^[a-zA-Z]:/, "")
+  if (base) keys.add(base)
+  if (base) keys.add(base.replace(/[\\/]/g, ""))
+  if (base && base.includes("\\")) keys.add(base.replace(/\\/g, "/"))
+  return [...keys]
 }
 
 export function goalStop(goalId: number) {

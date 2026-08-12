@@ -70,3 +70,23 @@ test("maintainCheckpoints preserves created_at timestamps", () => {
   expect(after.created_at).toBe(original) // never rewritten
   expect(after.deleted).toBe(1)
 })
+
+test("goalComplete clears the project's observations when the last active goal finishes", async () => {
+  const db = dbMod.getDb()
+  db.query(
+    "INSERT INTO observations (uuid, origin, type, payload, project, created_at) VALUES ('u-' || hex(randomblob(8)), 'n', 'test_obs', '{}', 'C:\\projX\\sub', datetime('now'))"
+  ).run()
+  db.query(
+    "INSERT INTO observations (uuid, origin, type, payload, project, created_at) VALUES ('u-' || hex(randomblob(8)), 'n', 'test_obs2', '{}', 'projX/sub', datetime('now'))"
+  ).run()
+  const g = goals.goalStart({ goal: "obs purge test", northStar: "ns", completionCriteria: "done", project: "C:\\projX\\sub" })
+  expect(
+    (db.query("SELECT COUNT(*) AS n FROM observations WHERE deleted = 0 AND type LIKE 'test_obs%'").get() as { n: number }).n
+  ).toBe(2)
+  goals.goalComplete(g.id)
+  // drive-letter and path variants of the project are both cleared
+  const remaining = db
+    .query("SELECT COUNT(*) AS n FROM observations WHERE deleted = 0 AND type LIKE 'test_obs%'")
+    .get() as { n: number }
+  expect(remaining.n).toBe(0)
+})
