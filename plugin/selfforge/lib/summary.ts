@@ -379,10 +379,10 @@ const STRONG_DONE_RE =
   /已完成|已修复|已改为|已解决|已提交|已推送|已生成|已删除|已更新|已实现|已添加|已同步|已创建|已设|完成|搞定|成功|done|fixed|pushed|committed|merged|implemented|总结|结论|答案|已就绪|已改|已修|已收尾/i
 
 /**
- * For each session, pick the most recent assistant message that carries a
- * strong completion marker (a real conclusion). If the last message itself
- * has none, walk back to find the latest conclusion-marked one. Then extract
- * its last conclusion sentences.
+ * Incremental aggregation: for each session, extract ALL assistant messages
+ * that carry a strong completion marker (a real conclusion). Each message
+ * becomes a separate daily item so new records append rather than overwrite
+ * old ones. Falls back to the last message if no conclusion marker exists.
  */
 function extractFinalAssistants(
   rows: Array<{ id: number; session_id: string; role: string; content: string; created_at: string }>
@@ -403,19 +403,15 @@ function extractFinalAssistants(
   for (const [sid, info] of sessions) {
     const day = info.day || dayOfSession.get(sid) || ""
     if (!day) continue
-    // newest first (push order = descending). Find first conclusion-marked msg.
-    let source = info.msgs[0] || ""
-    for (const m of info.msgs) {
-      if (STRONG_DONE_RE.test(m)) {
-        source = m
-        break
-      }
+    // Collect ALL conclusion-marked messages (incremental: each is a separate item).
+    const marked = info.msgs.filter((m) => STRONG_DONE_RE.test(m) && !isTrivial(m))
+    const sources = marked.length > 0 ? marked : info.msgs.slice(0, 1)
+    for (const source of sources) {
+      const text = extractConclusion(source)
+      if (text.length < 10) continue
+      if (!byDay.has(day)) byDay.set(day, [])
+      byDay.get(day)!.push({ session_id: sid, text })
     }
-    if (!source || isTrivial(source)) continue
-    const text = extractConclusion(source)
-    if (text.length < 10) continue
-    if (!byDay.has(day)) byDay.set(day, [])
-    byDay.get(day)!.push({ session_id: sid, text })
   }
   return byDay
 }

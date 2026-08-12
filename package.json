@@ -1,6 +1,6 @@
 {
   "name": "selfforge",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Unified self-evolution engine for OpenCode: memory, goals, skills, rules, and evolution in one plugin.",
   "type": "module",
   "license": "MIT",
