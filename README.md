@@ -90,11 +90,22 @@ Selfforge is registered as an extra opencode skill source via `skills.paths: ["~
 | 说明 (explain) | `skill_info <name>` shows description, status, eta, usage, disk location, and whether opencode currently loads it. Dashboard 技能 · 说明 |
 | 启动 (start) | `skill_enable <name>` moves SKILL.md back under `~/.evolve/skills` (opencode loads it again) and restores a non-disabled status. Dashboard · 启动 |
 | 停止 (stop) | `skill_disable <name>` moves SKILL.md out to `~/.evolve/skills-disabled/` (outside the scanned path, so opencode really unloads it) and marks `status=disabled`. Nothing is deleted. Dashboard · 停止 |
+| 赞/踩 (thumbs) | Dashboard thumbs up/down buttons adjust a skill's eta (reliability) by ±0.1, driving graduation or retirement. |
 | 从文件目录安装 (install from dir) | `skill_install <dir>` scans `<dir>/**/SKILL.md`, copies each into `~/.evolve/skills`, registers/updates the skill row. Dashboard 技能 · 从目录安装 |
 | 接管 opencode 技能 (adopt) | `skill_adopt` **moves** every skill under `~/.config/opencode/skills` and `~/.agents/skills` into selfforge-managed `~/.evolve/skills` (the originals are removed, so selfforge becomes the single owner) and registers them. Dashboard 技能 · 接管opencode技能 |
 | 卸载 (uninstall) | `skill_uninstall <name>` hard-deletes the DB row and removes the folder from both live and disabled dirs. Irreversible (unlike `skill_archive` soft-delete or `skill_disable` stop). Dashboard · 卸载 |
 
-Skill states: `candidate` → `active` → (`disabled` = stopped but retained, `archived` = retired by lifecycle) `stale`. Evolution only considers `active` skills with `use ≥ 2 AND fail ≥ 1`.
+Skill states: `candidate` → `active` → (`disabled` = stopped but retained, `archived` = retired by lifecycle) `stale`. Evolution only considers `active` skills with `use ≥ 2 AND fail ≥ 1`. Skills unused for 90 days (candidate/disabled) are auto-archived by the curator; active skills are exempt. Memories have a similar decay + TTL expiry, and rules expire after 180 days of inactivity.
+
+## Dashboard
+
+The dashboard (`selfforge serve` → http://127.0.0.1:9210/) is a single-page bilingual UI:
+
+- **Language**: auto-selects by `navigator.language` (zh → Chinese, else English), remembers your choice in `localStorage` (`lang`), and has a manual `EN/中文` toggle. Skill descriptions switch to `description_en` in English mode.
+- **Tabs**: Memories, Skills, Rules, Goals, Checkpoints, Daily summary, Workspaces.
+- **Hot restart**: the header "Restart" button kills and respawns the daemon so newly compiled dashboard code loads without restarting opencode.
+- **Error log**: the header "Logs" panel shows runtime errors (window.onerror, unhandled rejections, RPC failures) with a ring buffer, refresh and clear.
+- **Daily summary**: shows each session's final assistant conclusion (appended incrementally, quality-gated, never overwrites older entries).
 
 ## Architecture
 

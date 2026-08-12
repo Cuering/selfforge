@@ -126,6 +126,7 @@ export const DASHBOARD_HTML = html`
   <div class="actions">
     <button class="ghost" id="errBtn" onclick="toggleErrPanel()" title="运行错误日志">错误<span class="badge" id="errBadge">0</span></button>
     <button class="ghost" id="themeBtn" onclick="toggleTheme()">夜间</button>
+    <button class="ghost" id="langBtn" onclick="toggleLang()" title="切换界面语言">EN</button>
     <button onclick="location.reload()">刷新</button>
     <button onclick="restartDaemon()" title="重启 daemon 进程以加载新编译代码">重启</button>
   </div>
@@ -150,10 +151,25 @@ export const DASHBOARD_HTML = html`
   </main>
 </div>
 <script>
+// Language: read from localStorage, fallback to browser locale.
+let __lang = (() => {
+  try {
+    const saved = localStorage.getItem("lang");
+    if (saved === "zh" || saved === "en") return saved;
+    const l = (navigator.language || navigator.languages?.[0] || "en").toLowerCase();
+    return l.startsWith("zh") ? "zh" : "en";
+  } catch { return "en"; }
+})();
+function _l(zh, en){ return __lang === "zh" ? zh : en; }
+function toggleLang(){
+  __lang = __lang === "zh" ? "en" : "zh";
+  try { localStorage.setItem("lang", __lang); } catch (e) {}
+  location.reload();
+}
 function applyTheme(t){
   document.documentElement.setAttribute("data-theme", t);
   try { localStorage.setItem("theme", t); } catch (e) {}
-  document.getElementById("themeBtn").textContent = t === "light" ? "夜间" : "日间";
+  document.getElementById("themeBtn").textContent = _l(t === "light" ? "日间" : "夜间", t === "light" ? "Light" : "Dark");
 }
 function toggleTheme(){
   applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
@@ -165,16 +181,36 @@ function toggleTheme(){
   if (t === "dark" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) t = "light";
   applyTheme(t);
 })();
-// Language: auto-pick by browser locale (zh-* → Chinese, else English)
-const __lang = (() => {
-  try {
-    const l = (navigator.language || navigator.languages?.[0] || "en").toLowerCase();
-    if (l.startsWith("zh")) return "zh";
-    if (l.startsWith("en")) return "en";
-  } catch {}
-  return "en";
-})();
-function _l(zh, en){ return __lang === "zh" ? zh : en; }
+// Apply language to static UI elements (header buttons, error panel, etc.)
+function applyLang(){
+  document.getElementById("langBtn").textContent = __lang === "zh" ? "EN" : "中文";
+  document.getElementById("themeBtn").textContent = (() => {
+    const t = document.documentElement.getAttribute("data-theme");
+    return _l(t === "light" ? "日间" : "夜间", t === "light" ? "Light" : "Dark");
+  })();
+  document.getElementById("errBtn").childNodes[0].textContent = _l("错误","Logs");
+  // Set header buttons by index (order: errBtn, themeBtn, langBtn, refresh, restart)
+  const acts = document.querySelector("header .actions");
+  if (acts) {
+    const btns = acts.querySelectorAll("button");
+    if (btns[3]) btns[3].textContent = _l("刷新","Reload");
+    if (btns[4]) { btns[4].textContent = _l("重启","Restart"); btns[4].title = _l("重启 daemon 进程以加载新编译代码","Restart daemon to load new code"); }
+  }
+  const errPanel = document.getElementById("errPanel");
+  if (errPanel) {
+    const eh = errPanel.querySelector(".eh");
+    if (eh) {
+      eh.querySelector("b").textContent = _l("运行错误日志","Error Log");
+      const btns = eh.querySelectorAll("button");
+      if (btns[0]) btns[0].textContent = _l("刷新","Refresh");
+      if (btns[1]) btns[1].textContent = _l("清空","Clear");
+      if (btns[2]) btns[2].textContent = _l("关闭","Close");
+    }
+    const list = errPanel.querySelector("#errList");
+    if (list && list.classList.contains("empty")) list.textContent = _l("暂无错误","No errors");
+  }
+}
+applyLang();
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const __localErrs = [];
 function pushLocalErr(level, source, message, stack){
@@ -535,7 +571,8 @@ async function boot(){
     for (const s of skills) {
       const last = s.last_used_at ? String(s.last_used_at).slice(0, 10) : _l("从未","never");
       const noDesc = __lang === "zh" ? "（无中文说明）" : "(no description)";
-      h += "<tr><td><b>" + esc(s.name) + "</b>" + (s.description ? "<div class=muted>" + esc(s.description) + "</div>" : "<div class=muted>" + noDesc + "</div>") + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + Number(s.eta).toFixed(2) + "</td><td class=muted>" + (s.passed || 0) + "/" + (s.trials || 0) + "</td><td class=muted>" + esc(last) + "</td><td>" + skillRowAct(s) + "</td></tr>";
+      const desc = __lang === "zh" ? (s.description || s.description_en || "") : (s.description_en || s.description || "");
+      h += "<tr><td><b>" + esc(s.name) + "</b>" + (desc ? "<div class=muted>" + esc(desc) + "</div>" : "<div class=muted>" + noDesc + "</div>") + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + Number(s.eta).toFixed(2) + "</td><td class=muted>" + (s.passed || 0) + "/" + (s.trials || 0) + "</td><td class=muted>" + esc(last) + "</td><td>" + skillRowAct(s) + "</td></tr>";
     }
     skBox.innerHTML = h + "</table></div>";
   }

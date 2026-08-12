@@ -91,11 +91,22 @@ selfforge通过`skills.paths:[~/.evolve/skills]`注册为opencode额外技能源
 |说明|`skill_info <name>`显示描述/状态/eta/使用量/磁盘位置以及opencode当前是否加载;面板·说明|
 |启动|`skill_enable <name>`把SKILL.md移回`~/.evolve/skills`,恢复非disabled状态;面板·启动|
 |停止|`skill_disable <name>`把SKILL.md移到`~/.evolve/skills-disabled/`(扫描范围外,opencode真正不再加载),状态标disabled,不删任何东西;面板·停止|
+|赞/踩|面板赞/踩按钮调整技能可靠度η±0.1,驱动毕业或退役|
 |从文件目录安装|`skill_install <dir>`扫描`<dir>/**/SKILL.md`,逐个复制到`~/.evolve/skills`并注册/更新;面板·从目录安装|
 |接管opencode技能|`skill_adopt`把`~/.config/opencode/skills`与`~/.agents/skills`下所有技能**移动**到selfforge托管的`~/.evolve/skills`(原目录清空,selfforge成为唯一所有者)并注册;面板·接管opencode技能|
 |卸载|`skill_uninstall <name>`硬删数据库行并移除活跃/禁用两个目录里的文件夹,不可恢复(区别于archive软删与disable停止);面板·卸载|
 
-技能状态:`candidate`→`active`→(`disabled`已停止但保留、`archived`生命周期退役)`stale`。演进只考量`active`且`use≥2 AND fail≥1`的技能。
+技能状态:`candidate`→`active`→(`disabled`已停止但保留、`archived`生命周期退役)`stale`。演进只考量`active`且`use≥2 AND fail≥1`的技能。技能90天未试用自动归档(curator),active豁免;记忆有衰减+TTL过期;规则180天无更新过期。
+
+## 面板
+
+面板(`selfforge serve`→http://127.0.0.1:9210/)是单页双语UI:
+
+- **语言**:按`navigator.language`自动选择(zh→中文,否则英文),`localStorage.lang`记住上次选择,顶栏有`EN/中文`手动切换;英文模式下技能说明自动切换为`description_en`。
+- **标签页**:记忆、技能、规则、目标、检查点、每日总结、工作区。
+- **热重启**:顶栏「重启」按钮杀旧daemon并拉起新进程,加载新编译的dashboard代码,无需重启opencode。
+- **错误日志**:顶栏「错误」面板展示运行期错误(window.onerror、未捕获的Promise拒绝、RPC失败),环形缓冲,可刷新/清空。
+- **每日总结**:展示每个会话最后一条助手结论(增量追加、质量门控、不覆盖旧记录)。
 
 ## 架构
 

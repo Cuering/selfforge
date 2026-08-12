@@ -9,6 +9,7 @@ export type Skill = {
   origin: string | null
   name: string
   description: string | null
+  description_en: string | null
   content: string | null
   status: string
   usage_count: number
@@ -296,6 +297,7 @@ export function skillInfo(name: string) {
   return {
     name: skill.name,
     description: skill.description,
+    description_en: skill.description_en,
     status: skill.status,
     eta: skill.eta,
     usage: skill.usage_count,
