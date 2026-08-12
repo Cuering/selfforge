@@ -217,10 +217,6 @@ async function handle(method: string, params: any): Promise<any> {
         runRepair({ tool: "shell", context: "seed", errCode: "SEED_1", trigger: "manual" })
         created.repairs = "draft"
       }
-      if (d.counts.observations === 0) {
-        logObs("seed", { note: "dashboard seed" }, "seed")
-        created.observations = "1"
-      }
       return { created, counts: apiDashboard().counts }
     }
     case "skills.list": {
@@ -540,20 +536,9 @@ function apiDashboard() {
       goals: count("goals"),
       checkpoints: count("checkpoints"),
       evolution: count("evolution"),
-      observations: count("observations"),
       repairs: count("repairs"),
       workspaces: count("workspaces"),
     },
-    observations: (() => {
-      try {
-        const rows = getDb()
-          .query("SELECT id, uuid, type, project, created_at FROM observations WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
-          .all() as Array<{ id: number; uuid: string; type: string; project: string | null; created_at: string }>
-        return rows.map((o) => ({ id: o.uuid, type: o.type, project: o.project, created_at: o.created_at }))
-      } catch {
-        return []
-      }
-    })(),
   }
 }
 
@@ -645,10 +630,6 @@ function updateRow(kind: string | undefined, id: unknown, patch: Record<string, 
         db.query("UPDATE pattern_signatures SET sig_label = ? WHERE id = ?").run(String(patch.sig_label), ref)
       return { ok: true }
     }
-    case "observations":
-      if (patch.type !== undefined)
-        db.query("UPDATE observations SET type = ? WHERE id = ?").run(String(patch.type), ref)
-      return { ok: true }
     case "workspaces":
       if (patch.name !== undefined)
         db.query("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?").run(String(patch.name), ts, ref)
@@ -938,7 +919,6 @@ const DASHBOARD_HTML = `<!doctype html>
     <section class="pane" id="pane-daily"><div class="panel" id="daily"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-repairs"><div class="panel" id="repairs"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-patterns"><div class="panel" id="patterns"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-observations"><div class="panel" id="observations"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-workspaces"><div class="panel" id="workspaces"><div class="empty">加载中…</div></div></section>
   </main>
 </div>
@@ -971,7 +951,7 @@ const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归�
 const LIFECYCLE_ZH = { temporary:"临时", active:"活跃", permanent:"长期", archived:"已归档" };
 const GOAL_ZH = { active:"进行中", completed:"已完成", stopped:"已停止" };
 const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差评", "user.preference":"用户偏好", manual:"手动", failure:"失败", success:"成功" };
-const COUNT_ZH = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", observations:"观测", repairs:"修复", patterns:"模式", workspaces:"工作区" };
+const COUNT_ZH = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", repairs:"修复", patterns:"模式", workspaces:"工作区" };
 const TABS = [
   { id:"memories", label:"记忆", key:"memories", desc:"长期知识库，按强度分级，可编辑内容/删除(归档)" },
   { id:"skills", label:"技能", key:"skills", desc:"可复用技术/工作流，candidate→active→archived", gen:{ method:"skills.create", prompt:"技能名称：", desc:"技能描述：", args:["name","description"] } },
@@ -982,14 +962,13 @@ const TABS = [
   { id:"daily", label:"每日总结", key:"daily", desc:"按天聚合的会话要点(蒸馏提取)", distill:true },
   { id:"repairs", label:"修复草稿", key:"repairs", desc:"工具失败模式的修复建议", gen:{ method:"repairs.create", prompt:"工具名：", args:["tool"] } },
   { id:"patterns", label:"模式候选", key:"patterns", desc:"重复失败模式，达阈值提升为记忆", gen:{ method:"patterns.record", prompt:"工具名：", args:["tool"] } },
-  { id:"observations", label:"观测", key:"observations", desc:"引擎事件日志(加载/review/蒸馏等)" },
   { id:"workspaces", label:"工作区", key:"workspaces", desc:"访问过的工作目录指纹" }
 ];
-const TITLES = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", observations:"观测", workspaces:"工作区" };
+const TITLES = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", workspaces:"工作区" };
 const KIND_EDIT_LABEL = {
-  skills:"编辑技能描述：", rules:"编辑规则内容：", goals:"编辑目标：", checkpoints:"编辑备注：", evolution:"编辑候选内容：", repairs:"编辑草稿内容：", patterns:"编辑签名：", observations:"编辑类型：", workspaces:"编辑名称："
+  skills:"编辑技能描述：", rules:"编辑规则内容：", goals:"编辑目标：", checkpoints:"编辑备注：", evolution:"编辑候选内容：", repairs:"编辑草稿内容：", patterns:"编辑签名：", workspaces:"编辑名称："
 };
-const KIND_EDIT_FIELD = { skills:"description", rules:"rule", goals:"goal", checkpoints:"notes", evolution:"candidate", repairs:"draft", patterns:"sig_label", observations:"type", workspaces:"name" };
+const KIND_EDIT_FIELD = { skills:"description", rules:"rule", goals:"goal", checkpoints:"notes", evolution:"candidate", repairs:"draft", patterns:"sig_label", workspaces:"name" };
 function tierBadge(t, label){ return '<span class="tag t-' + t + '">' + esc(label || t) + "</span>"; }
 function statusBadge(s, label){ return '<span class="tag s-' + s + '">' + esc(label || s) + "</span>"; }
 function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
@@ -1199,8 +1178,6 @@ async function boot(){
   ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th><th>操作</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td><td>" + rowAct("patterns", p.id, "模式", p.sig) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
   const wsBox = document.getElementById("workspaces");
   wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th><th>操作</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td><td>" + '<span class=act><button class="open-dir" onclick="openDir(' + "'" + esc(w.id) + "'" + ')">打开目录</button>' + rowAct("workspaces", w.id, w.name, w.name) + "</span></td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
-  const obBox = document.getElementById("observations");
-  obBox.innerHTML = dash.observations && dash.observations.length ? "<div class=table-wrap><table><tr><th>类型</th><th>项目</th><th>时间</th><th>操作</th></tr>" + dash.observations.slice(0, 50).map(o => "<tr><td>" + esc(o.type) + "</td><td class=muted>" + esc(o.project || "") + "</td><td class=muted>" + esc((o.created_at || "").slice(0,19)) + "</td><td>" + rowAct("observations", o.id, "观测", o.type) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无观测</div>';
   const ruBox = document.getElementById("rules");
   ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>规则</th><th>域</th><th>范围</th><th>次数</th><th>操作</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:"全局", local:"本地" }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td><td>" + rowAct("rules", r.uuid, "规则", r.rule) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无规则</div>';
   const cpBox = document.getElementById("checkpoints");

@@ -131,6 +131,12 @@ export function goalCheckpoint(opts: { goalId: number; cp: string; status?: stri
       opts.goalId
     )
   }
+  // Terminal checkpoint states (done/skipped/failed) are auto-cleared — they represent
+  // completed CPs that no longer need to clutter the dashboard.
+  if (status === "done" || status === "skipped" || status === "failed") {
+    const cp = db.query("SELECT id FROM checkpoints WHERE goal_id = ? AND cp = ? ORDER BY id DESC LIMIT 1").get(opts.goalId, opts.cp) as { id: number } | undefined
+    if (cp) db.query("UPDATE checkpoints SET deleted = 1 WHERE id = ?").run(cp.id)
+  }
   return goalCheckpoints(opts.goalId)
 }
 
@@ -158,6 +164,9 @@ export function goalComplete(goalId: number) {
   const db = getDb()
   const g = getGoal(goalId)
   db.query("UPDATE goals SET status = 'completed', updated_at = ? WHERE id = ?").run(now(), goalId)
+  // A completed goal's checkpoints are terminal — clear them so the dashboard
+  // doesn't accumulate historical CP rows for finished goals.
+  db.query("UPDATE checkpoints SET deleted = 1 WHERE goal_id = ? AND deleted = 0").run(goalId)
   // A finished goal means its project's activity is done: clear the audit log
   // for that project once no other goal is still active there.
   if (g?.project) {
