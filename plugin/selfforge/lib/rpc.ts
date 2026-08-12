@@ -534,9 +534,9 @@ function apiDashboard() {
       skills: count("skills"),
       rules: count("rules"),
       goals: count("goals"),
-      checkpoints: count("checkpoints"),
+      checkpoints: (db.query("SELECT COUNT(DISTINCT goal_id) AS n FROM checkpoints WHERE deleted = 0").get() as { n: number }).n,
       evolution: count("evolution"),
-      repairs: count("repairs"),
+      repairs: (db.query("SELECT COUNT(*) AS n FROM repairs WHERE deleted = 0 AND status NOT IN ('accepted','rejected')").get() as { n: number }).n,
       workspaces: count("workspaces"),
     },
   }
@@ -1181,7 +1181,7 @@ async function boot(){
   const ruBox = document.getElementById("rules");
   ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>规则</th><th>域</th><th>范围</th><th>次数</th><th>操作</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:"全局", local:"本地" }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td><td>" + rowAct("rules", r.uuid, "规则", r.rule) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无规则</div>';
   const cpBox = document.getElementById("checkpoints");
-  cpBox.innerHTML = checkpoints.length ? "<div class=table-wrap><table><tr><th>检查点</th><th>状态</th><th>备注</th><th>操作</th></tr>" + checkpoints.slice(0, 60).map(c => "<tr><td>" + esc(c.cp) + "</td><td>" + esc(zh({ done:"完成", pending:"待办", skipped:"跳过", failed:"失败" }, c.status, c.status)) + "</td><td class=muted>" + esc(c.notes || "") + "</td><td>" + rowAct("checkpoints", c.uuid, "检查点", c.notes || "") + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无检查点</div>';
+  cpBox.innerHTML = checkpoints.length ? function(){ var groups={},i; for(i=0;i<checkpoints.length;i++){ var c=checkpoints[i],g=c.goal||"(无目标)"; if(!groups[g]||groups[g].cp<c.cp) groups[g]=c } var entries=[]; for(var k in groups) entries.push(groups[k]); entries.sort(function(a,b){return a.cp>b.cp?-1:1}); return "<div class=table-wrap><table><tr><th>目标</th><th>检查点</th><th>状态</th><th>备注</th><th>操作</th></tr>" + entries.slice(0,20).map(function(c){return "<tr><td class=muted>"+esc(c.goal||"")+"</td><td>"+esc(c.cp)+"</td><td>"+esc(zh({done:"完成",pending:"待办",skipped:"跳过",failed:"失败"},c.status,c.status))+"</td><td class=muted>"+esc(c.notes||"")+"</td><td>"+rowAct("checkpoints",c.uuid,"检查点",c.notes||"")+"</td></tr>"}).join("")+"</table></div>" }() : '<div class="empty">暂无检查点</div>';
   const evBox = document.getElementById("evolution");
   evBox.innerHTML = evolution.length ? "<div class=table-wrap><table><tr><th>策略</th><th>状态</th><th>技能</th><th>候选</th><th>操作</th></tr>" + evolution.slice(0, 30).map(e => "<tr><td>" + esc(zh({ harden:"加固", innovate:"创新", repair:"修复", generalize:"泛化" }, e.strategy, e.strategy)) + "</td><td>" + esc(zh({ pending:"待审", applied:"已应用", rejected:"已拒绝" }, e.status, e.status)) + "</td><td class=muted>" + esc(e.skill_name || "") + "</td><td>" + esc(e.candidate) + "</td><td>" + rowAct("evolution", e.uuid, "演进", e.candidate) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无演进候选</div>';
 }
