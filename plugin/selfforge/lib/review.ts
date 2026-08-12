@@ -45,13 +45,15 @@ export function formatReview(messages: Array<{ role: string; content: string }>,
   md += `- Trigger: unified-evolver\n\n`
 md += "## Instructions\n\n"
   md += 'Review the conversation below for learning opportunities.\nLoad the selfforge skill with: skill({ name: "selfforge" })\n\n'
-  md += "Use the provided tools to take action:\n\n"
-  md += "1. `memory_add` - record general rules, corrections, preferences (not narrow instances)\n"
-  md += "2. `user_add` - record communication/workflow preferences\n"
-  md += "3. `rule_observe` - capture behavioral rules for AGENTS.md escalation\n"
-  md += "4. `skill_create` / `skill_patch` - distill reusable techniques into skills\n"
-  md += "5. `goal_*` - track ongoing goal progress\n\n"
+  md += "Use the provided tools to take action, in priority order:\n\n"
+  md += "1. `skill_create` / `skill_patch` — DISTILL a reusable technique into a skill. This is the PRIMARY action: if the session showed a repeatable fix, build, workflow, command sequence or pattern (not a one-off), create a skill now. Skills drive evolution, so distillation is mandatory, not optional. Pass a concrete body with the actual steps/commands used.\n"
+  md += "2. `memory_add` - record general rules, corrections, preferences (not narrow instances)\n"
+  md += "3. `user_add` - record communication/workflow preferences\n"
+  md += "4. `rule_observe` - capture behavioral rules for AGENTS.md escalation\n"
+  md += "5. `evolution_propose` - if a listed skill has use>=2 and fail>=1 (check \`skill_list\`), propose an optimization candidate grounded in this session's failure evidence\n"
+  md += "6. `goal_*` - track ongoing goal progress\n\n"
   md += "IMPORTANT: Preferences are not always corrections. Capture declarative specs (\"should be\", \"we use\", \"we don't\", \"I want\") even when no error occurred.\n\n"
+  md += "IMPORTANT: Distilling at least one skill per review is expected when the session contained substantive work. Check the resulting skills with `skill_list` before finishing.\n\n"
   md += "## Conversation\n\n"
   for (const msg of messages) {
     const label = msg.role === "user" ? "User" : "Assistant"

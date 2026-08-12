@@ -63,6 +63,8 @@ function openDb(path: string): Database {
 export const EVOLVE_HOME = process.env.EVOLVE_HOME || join(homedir(), ".evolve")
 export const DB_PATH = join(EVOLVE_HOME, "unified.db")
 export const SKILLS_DIR = join(EVOLVE_HOME, "skills")
+/** Disabled skills live outside the opencode-scanning skills dir so `stop` really unloads them. */
+export const DISABLED_SKILLS_DIR = join(EVOLVE_HOME, "skills-disabled")
 export const REVIEWS_DIR = join(EVOLVE_HOME, "reviews")
 export const ARCHIVE_DIR = join(SKILLS_DIR, ".archive")
 

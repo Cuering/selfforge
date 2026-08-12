@@ -85,7 +85,7 @@ Manual install:
 | Session state | `session_summary`, `session_summaries`, `session_search` |
 | Recall eval | `memory_eval` |
 | User profile | `user_add`, `user_list`, `user_remove` |
-| Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage`, `skill_status`, `skill_feedback`, `skill_verify` |
+| Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage`, `skill_status`, `skill_feedback`, `skill_verify`, `skill_enable`, `skill_disable`, `skill_info`, `skill_install`, `skill_uninstall`, `skill_adopt` |
 | Rules | `rule_observe`, `rule_status`, `rule_escalate` |
 | Goals | `goal_start`, `goal_status`, `goal_checkpoint`, `goal_complete`, `goal_stop` |
 | Evolution | `evolution_status`, `evolution_propose`, `evolution_apply`, `evolution_reject` |
@@ -95,6 +95,21 @@ Manual install:
 | Workspaces | `workspace_status`, `workspace_scan`, `workspace_list` |
 | Transfer | `transfer_export`, `transfer_import`, `transfer_preview`, `transfer_status` |
 | Team sync | `team_sync`, `team_status`, `team_init`, `team_ping` |
+
+## Skill management
+
+Selfforge is registered as an extra opencode skill source via `skills.paths: ["~/.evolve/skills"]`, so the skills it manages are the same ones opencode loads. Management operations:
+
+| Action | Tools / dashboard |
+|---|---|
+| 说明 (explain) | `skill_info <name>` shows description, status, eta, usage, disk location, and whether opencode currently loads it. Dashboard 技能 · 说明 |
+| 启动 (start) | `skill_enable <name>` moves SKILL.md back under `~/.evolve/skills` (opencode loads it again) and restores a non-disabled status. Dashboard · 启动 |
+| 停止 (stop) | `skill_disable <name>` moves SKILL.md out to `~/.evolve/skills-disabled/` (outside the scanned path, so opencode really unloads it) and marks `status=disabled`. Nothing is deleted. Dashboard · 停止 |
+| 从文件目录安装 (install from dir) | `skill_install <dir>` scans `<dir>/**/SKILL.md`, copies each into `~/.evolve/skills`, registers/updates the skill row. Dashboard 技能 · 从目录安装 |
+| 接管 opencode 技能 (adopt) | `skill_adopt` **moves** every skill under `~/.config/opencode/skills` and `~/.agents/skills` into selfforge-managed `~/.evolve/skills` (the originals are removed, so selfforge becomes the single owner) and registers them. Dashboard 技能 · 接管opencode技能 |
+| 卸载 (uninstall) | `skill_uninstall <name>` hard-deletes the DB row and removes the folder from both live and disabled dirs. Irreversible (unlike `skill_archive` soft-delete or `skill_disable` stop). Dashboard · 卸载 |
+
+Skill states: `candidate` → `active` → (`disabled` = stopped but retained, `archived` = retired by lifecycle) `stale`. Evolution only considers `active` skills with `use ≥ 2 AND fail ≥ 1`.
 
 ## Architecture
 

@@ -3,12 +3,13 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import { spawn } from "node:child_process"
 import { readFileSync, existsSync, unlinkSync } from "node:fs"
 import { join, dirname } from "node:path"
+import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { getDb, nodeId, clock, advanceClockTo, logObs, now, EVOLVE_HOME } from "./db"
 import { exportSnapshot, importSnapshot, transferStatus, SNAPSHOT_FORMAT } from "./transfer"
 import { memoryList, memoryUpdateById, memoryArchiveById, memoryAdd } from "./memory"
 import { dailySummaries, summarizeSession, sessionSummaryList } from "./summary"
-import { skillCreate, skillList, skillStatus, skillArchive, skillPatch } from "./skills"
+import { skillCreate, skillList, skillStatus, skillArchive, skillPatch, skillInfo, skillEnable, skillDisable, skillUninstall, skillInstallFromDir, adoptOpencodeSkills } from "./skills"
 import { workspaceList, mergeDuplicateWorkspaces } from "./workspace"
 import { goalStatus, goalStart, maintainCheckpoints } from "./goals"
 import { ruleObserve, ruleStatus } from "./rules"
@@ -226,10 +227,26 @@ async function handle(method: string, params: any): Promise<any> {
       const list = skillList({ includeDeleted: false }).map((s) => ({
         id: s.uuid,
         name: s.name,
+        description: s.description,
         status: s.status,
         eta: s.eta,
       }))
       return { skills: list, status: skillStatus() }
+    }
+    case "skills.enable":
+      return skillEnable(String(params?.name))
+    case "skills.disable":
+      return skillDisable(String(params?.name))
+    case "skills.uninstall":
+      return skillUninstall(String(params?.name))
+    case "skills.info":
+      return skillInfo(String(params?.name))
+    case "skills.install": {
+      if (!params?.dir) throw new Error("params.dir required")
+      return skillInstallFromDir(String(params.dir))
+    }
+    case "skills.adopt": {
+      return adoptOpencodeSkills([join(homedir(), ".config", "opencode", "skills"), join(homedir(), ".agents", "skills")])
     }
     case "workspaces.list":
       return workspaceList({ limit: Number(params?.limit ?? 20) }).map((w) => ({
@@ -477,6 +494,7 @@ function apiSkills() {
   return skillList({ includeDeleted: false }).map((s) => ({
     id: s.uuid,
     name: s.name,
+    description: s.description,
     status: s.status,
     eta: s.eta,
     trials: s.trials_attempted ?? 0,
@@ -824,14 +842,14 @@ const DASHBOARD_HTML = `<!doctype html>
 <style>
   :root {
     --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#d7dbe2; --dim:#8b93a3;
-    --acc:#5b8def; --good:#4caf7d; --warn:#d9a13b; --bad:#e2605b;
+    --acc:#5b8def; --acc-txt:#9ec2ff; --on-acc:#fff; --good:#4caf7d; --warn:#d9a13b; --bad:#e2605b;
     --strong:#fff; --hover:#1c2130; --cnt-bg:#262b36;
     --t-hot-bg:#3d2e1e; --t-warm-bg:#1e2a3d; --t-cold-bg:#262b36; --t-evictable-bg:#332a1a;
     --s-active-bg:#143524; --s-candidate-bg:#1e2a3d; --s-trial-bg:#1e2a3d; --s-archived-bg:#3a1e1e; --s-stale-bg:#332a1a;
   }
   [data-theme="light"] {
     --bg:#f5f7fa; --panel:#ffffff; --line:#e1e6ef; --fg:#1c2733; --dim:#5c6b7a;
-    --acc:#3b6fe0; --good:#2e9e62; --warn:#b8811b; --bad:#d4524d;
+    --acc:#3b6fe0; --acc-txt:#1d4fb8; --on-acc:#fff; --good:#2e9e62; --warn:#b8811b; --bad:#d4524d;
     --strong:#0f1115; --hover:#eef2f8; --cnt-bg:#e7ecf3;
     --t-hot-bg:#fbe9d0; --t-warm-bg:#dce7fa; --t-cold-bg:#e8edf3; --t-evictable-bg:#f3e6c8;
     --s-active-bg:#d9f0e2; --s-candidate-bg:#dce7fa; --s-trial-bg:#e3ecfb; --s-archived-bg:#f7dcdb; --s-stale-bg:#f3e6c8;
@@ -843,7 +861,7 @@ const DASHBOARD_HTML = `<!doctype html>
   header h1 { font-size:17px; margin:0; color:var(--strong); }
   header .sub { color:var(--dim); font-size:12px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   header .actions { margin-left:auto; display:flex; gap:8px; }
-  header button { background:var(--acc); color:var(--strong); border:0; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
+  header button { background:var(--acc); color:var(--on-acc); border:0; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
   header button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
   header button.ghost:hover { border-color:var(--acc); color:var(--acc); }
   .overview { padding:12px 20px; border-bottom:1px solid var(--line); flex:none; }
@@ -855,14 +873,14 @@ const DASHBOARD_HTML = `<!doctype html>
   nav { width:158px; flex:none; border-right:1px solid var(--line); padding:12px 8px; overflow-y:auto; }
   nav button { display:flex; align-items:center; justify-content:space-between; width:100%; background:transparent; border:0; border-radius:7px; color:var(--dim); padding:9px 12px; font-size:13px; cursor:pointer; margin-bottom:2px; font-family:inherit; }
   nav button:hover { background:var(--hover); color:var(--strong); }
-  nav button.active { background:var(--acc); color:var(--strong); }
+  nav button.active { background:var(--acc); color:var(--on-acc); }
   nav button .cnt { background:var(--cnt-bg); color:var(--dim); border-radius:99px; font-size:11px; padding:1px 8px; }
-  nav button.active .cnt { background:rgba(255,255,255,.22); color:var(--strong); }
+  nav button.active .cnt { background:rgba(255,255,255,.22); color:var(--on-acc); }
   main { flex:1; padding:16px 22px; overflow-y:auto; min-width:0; }
   .tab-title { font-size:15px; color:var(--strong); margin:0 0 12px; }
   .toolbar { display:flex; gap:8px; margin:-4px 0 12px; min-height:30px; align-items:center; }
   .toolbar .tab-desc { color:var(--dim); font-size:12px; margin-right:auto; }
-  .toolbar button.gen-btn { background:var(--acc); color:var(--strong); border:0; border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
+  .toolbar button.gen-btn { background:var(--acc); color:var(--on-acc); border:0; border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
   .toolbar button.gen-btn:hover { filter:brightness(1.1); }
   .pane { display:none; }
   .pane.active { display:block; }
@@ -871,12 +889,14 @@ const DASHBOARD_HTML = `<!doctype html>
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--dim); font-weight:500; font-size:12px; white-space:nowrap; }
+  .table-wrap table th:last-child, .table-wrap table td:last-child { position:sticky; right:0; background:var(--panel); border-left:1px solid var(--line); z-index:1; }
+  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
   tbody tr:last-child td { border-bottom:0; }
   td .tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11px; margin-right:6px; white-space:nowrap; }
   td .st { color:var(--dim); font-size:11px; }
   td .content-cell { min-width:240px; word-break:break-word; }
-  .t-hot{background:var(--t-hot-bg);color:var(--warn);} .t-warm{background:var(--t-warm-bg);color:var(--acc);} .t-cold{background:var(--t-cold-bg);color:var(--dim);} .t-evictable{background:var(--t-evictable-bg);color:var(--warn);}
-  .s-active{background:var(--s-active-bg);color:var(--good);} .s-candidate{background:var(--s-candidate-bg);color:var(--acc);} .s-trial{background:var(--s-trial-bg);color:var(--acc);} .s-archived{background:var(--s-archived-bg);color:var(--bad);} .s-stale{background:var(--s-stale-bg);color:var(--warn);}
+  .t-hot{background:var(--t-hot-bg);color:var(--warn);} .t-warm{background:var(--t-warm-bg);color:var(--acc-txt);} .t-cold{background:var(--t-cold-bg);color:var(--dim);} .t-evictable{background:var(--t-evictable-bg);color:var(--warn);}
+  .s-active{background:var(--s-active-bg);color:var(--good);} .s-candidate{background:var(--s-candidate-bg);color:var(--acc-txt);} .s-trial{background:var(--s-trial-bg);color:var(--acc-txt);} .s-archived{background:var(--s-archived-bg);color:var(--bad);} .s-stale{background:var(--s-stale-bg);color:var(--warn);}
   .muted { color:var(--dim); }
   pre { margin:0; padding:10px 12px; overflow:auto; max-height:320px; font-size:11px; }
   .empty { padding:16px; color:var(--dim); font-size:12px; }
@@ -947,7 +967,7 @@ async function rpc(method, params){
   return j.result;
 }
 const TIER_ZH = { hot:"热", warm:"温", cold:"冷", evictable:"可淘汰" };
-const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归档", stale:"过期", active:"活跃", trial:"试用" };
+const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归档", stale:"过期", active:"活跃", trial:"试用", disabled:"已停止" };
 const LIFECYCLE_ZH = { temporary:"临时", active:"活跃", permanent:"长期", archived:"已归档" };
 const GOAL_ZH = { active:"进行中", completed:"已完成", stopped:"已停止" };
 const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差评", "user.preference":"用户偏好", manual:"手动", failure:"失败", success:"成功" };
@@ -1020,6 +1040,18 @@ function updateToolbar(){
     btn.addEventListener("click", () => genByTab(tab));
     bar.appendChild(btn);
   }
+  if (tab && tab.id === "skills") {
+    const b1 = document.createElement("button");
+    b1.textContent = "接管opencode技能";
+    b1.className = "gen-btn";
+    b1.addEventListener("click", () => adoptSkills());
+    bar.appendChild(b1);
+    const b2 = document.createElement("button");
+    b2.textContent = "从目录安装";
+    b2.className = "gen-btn";
+    b2.addEventListener("click", () => installSkillDir());
+    bar.appendChild(b2);
+  }
   if (tab && tab.distill) {
     const btn = document.createElement("button");
     btn.textContent = "蒸馏";
@@ -1059,6 +1091,36 @@ async function openDir(id){
 function rowAct(kind, id, label, current){
   const field = KIND_EDIT_FIELD[kind];
   return '<span class=act><button onclick="editRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(current || "") + "'" + ',' + "'" + (field || "") + "'" + ')">编辑</button><button class=del onclick="delRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(label || "") + "'" + ')">删除</button></span>';
+}
+function skillRun(method, name){
+  rpc(method, { name }).then((r) => { if (r.error) alert(r.error); else boot(); }).catch((e) => alert(e.message));
+}
+async function skillInfoBox(name){
+  try {
+    const r = await rpc("skills.info", { name });
+    if (r.error) return alert(r.error);
+    alert("【" + r.name + "】\\n" + (r.description || "") + "\\n\\n状态：" + r.status + "  η=" + r.eta.toFixed(2) + "  试用 " + r.trials + "\\n使用：" + r.usage + "  失败：" + r.fails + "  已优化：" + (r.optimized_at ? "是" : "否") + "\\n\\n路径：" + (r.location || "") + (r.loaded_by_opencode ? "\\n[opencode 当前加载]" : "\\n[opencode 未加载]"));
+  } catch (e) { alert(e.message); }
+}
+function skillRowAct(s){
+  const en = s.status === "disabled" ? '<button onclick="skillRun(' + "'skills.enable'" + ',' + "'" + esc(s.name) + "'" + ')">启动</button>' : '<button class=del onclick="skillRun(' + "'skills.disable'" + ',' + "'" + esc(s.name) + "'" + ')">停止</button>';
+  return '<span class=act>' + en + '<button onclick="skillInfoBox(' + "'" + esc(s.name) + "'" + ')">说明</button><button class=del onclick="delRow(' + "'skills'" + ',' + "'" + esc(s.id) + "'" + ',' + "'" + esc(s.name) + "'" + ')">卸载</button></span>';
+}
+async function adoptSkills(){
+  try {
+    const r = await rpc("skills.adopt", {});
+    alert("已接管技能：" + (r.installed.length ? r.installed.join("、") : "（无新增）") + (r.skipped.length ? "\\n跳过：" + r.skipped.join("、") : ""));
+    await boot();
+  } catch (e) { alert(e.message); }
+}
+async function installSkillDir(){
+  const d = prompt("输入要安装技能的目录（会扫描其中所有 SKILL.md）：", "");
+  if (d === null || !d.trim()) return;
+  try {
+    const r = await rpc("skills.install", { dir: d.trim() });
+    alert("已安装：" + (r.installed.length ? r.installed.join("、") : "（无）") + (r.skipped.length ? "\\n跳过：" + r.skipped.join("、") : ""));
+    await boot();
+  } catch (e) { alert(e.message); }
 }
 async function genByTab(tab){
   const g = tab.gen;
@@ -1126,7 +1188,7 @@ async function boot(){
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
   else {
     let h = "<div class=table-wrap><table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th><th>操作</th></tr>";
-    for (const s of skills) h += "<tr><td>" + esc(s.name) + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td><td>" + rowAct("skills", s.id, s.name, "") + "</td></tr>";
+    for (const s of skills) h += "<tr><td>" + esc(s.name) + (s.description ? "<div class=muted>" + esc(s.description) + "</div>" : "") + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td><td>" + skillRowAct(s) + "</td></tr>";
     skBox.innerHTML = h + "</table></div>";
   }
   const goBox = document.getElementById("goals");

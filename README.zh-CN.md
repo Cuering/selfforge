@@ -85,7 +85,7 @@ bash selfforge/install.sh
 |会话状态|`session_summary`、`session_summaries`、`session_search`|
 |召回评测|`memory_eval`|
 |用户画像|`user_add`、`user_list`、`user_remove`|
-|技能|`skill_create`、`skill_patch`、`skill_list`、`skill_archive`、`skill_usage`、`skill_status`、`skill_feedback`、`skill_verify`|
+|技能|`skill_create`、`skill_patch`、`skill_list`、`skill_archive`、`skill_usage`、`skill_status`、`skill_feedback`、`skill_verify`、`skill_enable`、`skill_disable`、`skill_info`、`skill_install`、`skill_uninstall`、`skill_adopt`|
 |规则|`rule_observe`、`rule_status`、`rule_escalate`|
 |目标|`goal_start`、`goal_status`、`goal_checkpoint`、`goal_complete`、`goal_stop`|
 |进化|`evolution_status`、`evolution_propose`、`evolution_apply`、`evolution_reject`|
@@ -96,6 +96,21 @@ bash selfforge/install.sh
 |工作区|`workspace_status`、`workspace_scan`、`workspace_list`|
 |迁移|`transfer_export`、`transfer_import`、`transfer_preview`、`transfer_status`|
 |团队同步|`team_sync`、`team_status`、`team_init`、`team_ping`|
+
+## 技能管理
+
+selfforge通过`skills.paths:[~/.evolve/skills]`注册为opencode额外技能源,它管理的技能就是opencode实际加载的技能。
+
+|操作|方式|
+|---|---|
+|说明|`skill_info <name>`显示描述/状态/eta/使用量/磁盘位置以及opencode当前是否加载;面板·说明|
+|启动|`skill_enable <name>`把SKILL.md移回`~/.evolve/skills`,恢复非disabled状态;面板·启动|
+|停止|`skill_disable <name>`把SKILL.md移到`~/.evolve/skills-disabled/`(扫描范围外,opencode真正不再加载),状态标disabled,不删任何东西;面板·停止|
+|从文件目录安装|`skill_install <dir>`扫描`<dir>/**/SKILL.md`,逐个复制到`~/.evolve/skills`并注册/更新;面板·从目录安装|
+|接管opencode技能|`skill_adopt`把`~/.config/opencode/skills`与`~/.agents/skills`下所有技能**移动**到selfforge托管的`~/.evolve/skills`(原目录清空,selfforge成为唯一所有者)并注册;面板·接管opencode技能|
+|卸载|`skill_uninstall <name>`硬删数据库行并移除活跃/禁用两个目录里的文件夹,不可恢复(区别于archive软删与disable停止);面板·卸载|
+
+技能状态:`candidate`→`active`→(`disabled`已停止但保留、`archived`生命周期退役)`stale`。演进只考量`active`且`use≥2 AND fail≥1`的技能。
 
 ## 架构
 

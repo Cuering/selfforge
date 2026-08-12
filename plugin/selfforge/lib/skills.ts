@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
 import { join } from "path"
 import { getDb, getConfig, now, stamp } from "./db"
-import { SKILLS_DIR } from "./db"
+import { SKILLS_DIR, DISABLED_SKILLS_DIR } from "./db"
 
 export type Skill = {
   id: number
@@ -219,6 +219,214 @@ export function markSkillOptimized(name: string) {
   getDb()
     .query("UPDATE skills SET optimized_at = ?, updated_at = ? WHERE name = ?")
     .run(now(), now(), name)
+}
+
+export const SKILL_STATUS_LABELS: Record<string, string> = {
+  candidate: "候选",
+  active: "活跃",
+  disabled: "已停止",
+  stale: "过期",
+  archived: "已归档",
+}
+
+/** Description + status + location, for `skill info` / management UI. */
+export function skillInfo(name: string) {
+  const db = getDb()
+  const skill = db.query("SELECT * FROM skills WHERE name = ?").get(name) as Skill | undefined
+  if (!skill) return { error: `Skill "${name}" not found` }
+  const active = existsSync(skillPath(name))
+  const disabled = existsSync(join(DISABLED_SKILLS_DIR, name, "SKILL.md"))
+  return {
+    name: skill.name,
+    description: skill.description,
+    status: skill.status,
+    eta: skill.eta,
+    usage: skill.usage_count,
+    fails: skill.fail_count,
+    trials: `${skill.trials_passed}/${skill.trials_attempted}`,
+    optimized_at: skill.optimized_at,
+    location: disabled ? join(DISABLED_SKILLS_DIR, name) : skillPath(skill.name),
+    loaded_by_opencode: active && !disabled,
+    content: skill.content ?? "",
+  }
+}
+
+/** Start/enable a skill: move its SKILL dir back under SKILLS_DIR and un-dumb status. */
+export function skillEnable(name: string) {
+  const db = getDb()
+  const skill = db.query("SELECT * FROM skills WHERE name = ?").get(name) as Skill | undefined
+  if (!skill) return { error: `Skill "${name}" not found` }
+  const disabledDir = join(DISABLED_SKILLS_DIR, name)
+  const targetDir = join(SKILLS_DIR, name)
+  if (existsSync(disabledDir)) {
+    mkdirSync(SKILLS_DIR, { recursive: true })
+    try {
+      renameSync(disabledDir, targetDir)
+    } catch {
+      return { error: `Could not move ${disabledDir} -> ${targetDir}` }
+    }
+  } else if (!existsSync(targetDir) && skill.content) {
+    mkdirSync(targetDir, { recursive: true })
+    writeFileSync(skillPath(name), skill.content)
+  }
+  const status = skill.trials_attempted >= (skillLifecycleConfig().candidateTrials as number) ? "active" : skill.status === "disabled" ? "candidate" : skill.status
+  db.query("UPDATE skills SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), skill.id)
+  return { enabled: true, name, status }
+}
+
+/** Stop/disable a skill: move its SKILL dir out of SKILLS_DIR so opencode stops loading it. */
+export function skillDisable(name: string) {
+  const db = getDb()
+  const skill = db.query("SELECT * FROM skills WHERE name = ?").get(name) as Skill | undefined
+  if (!skill) return { error: `Skill "${name}" not found` }
+  const src = join(SKILLS_DIR, name)
+  const dst = join(DISABLED_SKILLS_DIR, name)
+  if (existsSync(src)) {
+    mkdirSync(DISABLED_SKILLS_DIR, { recursive: true })
+    try {
+      renameSync(src, dst)
+    } catch {
+      return { error: `Could not move ${src} -> ${dst}` }
+    }
+  }
+  db.query("UPDATE skills SET status = 'disabled', updated_at = ? WHERE id = ?").run(now(), skill.id)
+  return { disabled: true, name }
+}
+
+/** Uninstall a skill completely: delete DB row + disk dir (both live and disabled). */
+export function skillUninstall(name: string) {
+  const db = getDb()
+  const skill = db.query("SELECT * FROM skills WHERE name = ?").get(name) as Skill | undefined
+  if (!skill) return { error: `Skill "${name}" not found` }
+  for (const d of [join(SKILLS_DIR, name), join(DISABLED_SKILLS_DIR, name)]) {
+    try {
+      rmSync(d, { recursive: true, force: true })
+    } catch {}
+  }
+  // hard-delete row so it truly disappears from management
+  try {
+    db.query("DELETE FROM skills WHERE id = ?").run(skill.id)
+    db.query("DELETE FROM evolution WHERE skill_id = ?").run(skill.id)
+  } catch {}
+  return { uninstalled: true, name }
+}
+
+/** Install a skill from a directory that contains SKILL.md(s). Scans dir/**\/SKILL.md. */
+export function skillInstallFromDir(dir: string): { installed: string[]; skipped: string[] } {
+  const installed: string[] = []
+  const skipped: string[] = []
+  const root = dir.trim()
+  if (!root || !existsSync(root)) return { installed, skipped: [`directory not found: ${root}`] }
+
+  const found: string[] = []
+  const walk = (d: string) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue
+      const p = join(d, entry.name)
+      if (entry.isDirectory()) walk(p)
+      else if (entry.name === "SKILL.md") found.push(p)
+    }
+  }
+  walk(root)
+
+  const db = getDb()
+  for (const p of found) {
+    const content = require("fs").readFileSync(p, "utf-8")
+    const nameMatch = content.match(/^name:\s*(.+)$/m)
+    const descMatch = content.match(/^description:\s*(.+)$/m)
+    const name = slugify(nameMatch?.[1]?.trim() ?? "")
+    if (!name) {
+      skipped.push(`${p} (no name in frontmatter)`)
+      continue
+    }
+    const existing = db.query("SELECT * FROM skills WHERE name = ?").get(name) as Skill | undefined
+    const to = join(SKILLS_DIR, name)
+    mkdirSync(to, { recursive: true })
+    writeFileSync(join(to, "SKILL.md"), content)
+    if (existing) {
+      db.query("UPDATE skills SET description = ?, content = ?, status = 'active', deleted = 0, updated_at = ? WHERE id = ?").run(
+        descMatch?.[1]?.trim() ?? existing.description,
+        content,
+        now(),
+        existing.id
+      )
+      installed.push(`${name} (updated)`)
+    } else {
+      const ts = now()
+      const st = stamp()
+      db.query(
+        "INSERT INTO skills (uuid, origin, name, description, content, status, usage_count, fail_count, eta, trials_attempted, trials_passed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 0.5, 0, 0, ?, ?)"
+      ).run(st.uuid, st.origin, name, descMatch?.[1]?.trim() ?? name, content, ts, ts)
+      installed.push(name)
+    }
+  }
+  if (found.length === 0) skipped.push(`no SKILL.md found under ${root}`)
+  return { installed, skipped }
+}
+
+/** Adopt opencode's own skill directories (~/.config/opencode/skills, ~/.agents/skills) into selfforge management.
+ *  MOVE semantics: each skill folder is relocated into SKILLS_DIR so the original location stops serving it. */
+export function adoptOpencodeSkills(dirs: string[]): { installed: string[]; skipped: string[]; moved: string[] } {
+  const installed: string[] = []
+  const skipped: string[] = []
+  const moved: string[] = []
+  const db = getDb()
+  for (const dir of dirs) {
+    if (!dir || !existsSync(dir)) continue
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue
+      const skillDir = join(dir, entry.name)
+      const p = join(skillDir, "SKILL.md")
+      if (!existsSync(p)) continue
+      const content = require("fs").readFileSync(p, "utf-8")
+      const descMatch = content.match(/^description:\s*(.+)$/m)
+      const to = join(SKILLS_DIR, entry.name)
+      mkdirSync(SKILLS_DIR, { recursive: true })
+      if (existsSync(to)) {
+        // destination already managed: update content, keep DB row, drop the old folder
+        try {
+          rmSync(to, { recursive: true, force: true })
+        } catch {}
+      }
+      let ok = false
+      try {
+        renameSync(skillDir, to)
+        ok = true
+      } catch {
+        // cross-volume fallback: copy then remove
+        try {
+          writeFileSync(join(to, "SKILL.md"), content)
+          mkdirSync(to, { recursive: true })
+          writeFileSync(join(to, "SKILL.md"), content)
+          rmSync(skillDir, { recursive: true, force: true })
+          ok = true
+        } catch {}
+      }
+      if (!ok) {
+        skipped.push(`${entry.name} (move failed)`)
+        continue
+      }
+      moved.push(`${entry.name} (${dir})`)
+      const existing = db.query("SELECT * FROM skills WHERE name = ?").get(entry.name) as Skill | undefined
+      if (existing) {
+        db.query("UPDATE skills SET description = ?, content = ?, status = 'active', deleted = 0, updated_at = ? WHERE id = ?").run(
+          descMatch?.[1]?.trim() ?? existing.description,
+          content,
+          now(),
+          existing.id
+        )
+        installed.push(entry.name)
+      } else {
+        const ts = now()
+        const st = stamp()
+        db.query(
+          "INSERT INTO skills (uuid, origin, name, description, content, status, usage_count, fail_count, eta, trials_attempted, trials_passed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 0.5, 0, 0, ?, ?)"
+        ).run(st.uuid, st.origin, entry.name, descMatch?.[1]?.trim() ?? entry.name, content, ts, ts)
+        installed.push(entry.name)
+      }
+    }
+  }
+  return { installed, skipped, moved }
 }
 
 export function skillUsage() {

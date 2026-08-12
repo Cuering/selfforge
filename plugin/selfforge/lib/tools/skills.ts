@@ -1,7 +1,28 @@
 import { tool } from "@opencode-ai/plugin"
-import { skillCreate, skillPatch, skillArchive, skillList, skillUsage, skillStatus, skillFeedback } from "../skills"
+import { join } from "path"
+import { homedir } from "os"
+import {
+  skillCreate,
+  skillPatch,
+  skillArchive,
+  skillList,
+  skillUsage,
+  skillStatus,
+  skillFeedback,
+  skillEnable,
+  skillDisable,
+  skillUninstall,
+  skillInstallFromDir,
+  skillInfo,
+  adoptOpencodeSkills,
+} from "../skills"
 import { verifySkillDraft } from "../verify"
 import { logObs } from "../db"
+
+const OPENCODE_SKILL_DIRS = () => [
+  join(homedir(), ".config", "opencode", "skills"),
+  join(homedir(), ".agents", "skills"),
+]
 
 export const skillTools = {
   skill_create: tool({
@@ -105,6 +126,80 @@ export const skillTools = {
     async execute(args, ctx) {
       const res = verifySkillDraft({ name: args.name, description: args.description, body: args.body })
       logObs("skill_verify", res, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
+    },
+  }),
+
+  skill_enable: tool({
+    description:
+      "Start/enable a skill: moves its SKILL.md back into the opencode-loading skills dir (SKILLS_DIR) and restores a non-disabled status. Inverse of skill_disable.",
+    args: {
+      name: tool.schema.string().describe("Skill name"),
+    },
+    async execute(args, ctx) {
+      const res = skillEnable(args.name)
+      logObs("skill_enable", res, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
+    },
+  }),
+
+  skill_disable: tool({
+    description:
+      "Stop/disable a skill: moves its SKILL.md out of the opencode-loading skills dir into ~/.evolve/skills-disabled so opencode stops loading it, and marks status=disabled. Does not delete anything.",
+    args: {
+      name: tool.schema.string().describe("Skill name"),
+    },
+    async execute(args, ctx) {
+      const res = skillDisable(args.name)
+      logObs("skill_disable", res, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
+    },
+  }),
+
+  skill_info: tool({
+    description:
+      "Show a skill's details: description, status, eta, usage, trials, current on-disk location and whether opencode loads it. Use to explain what a skill does.",
+    args: {
+      name: tool.schema.string().describe("Skill name"),
+    },
+    async execute(args) {
+      return { output: JSON.stringify(skillInfo(args.name), null, 2) }
+    },
+  }),
+
+  skill_install: tool({
+    description:
+      "Install a skill from a filesystem directory: scans the directory (and subdirs) for SKILL.md files, copies them into the selfforge-managed skills dir, and registers them in the skill table. Re-running updates existing skills. Returns installed/skipped names.",
+    args: {
+      dir: tool.schema.string().describe("Directory to scan for SKILL.md files (absolute or ~ path)"),
+    },
+    async execute(args, ctx) {
+      const res = skillInstallFromDir(args.dir.replace(/^~[\\/]/, homedir() + "/"))
+      logObs("skill_install", { dir: args.dir, ...res }, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
+    },
+  }),
+
+  skill_adopt: tool({
+    description:
+      "Adopt opencode's own skill directories (~/.config/opencode/skills and ~/.agents/skills) into selfforge management. MOVE semantics: every skill folder is MOVED into the selfforge-managed skills dir (~/.evolve/skills, loaded by opencode via skills.paths) and registered. The original folder is removed, so selfforge becomes the single owner. Use once to bring existing skills under selfforge control.",
+    args: {},
+    async execute(args, ctx) {
+      const res = adoptOpencodeSkills([join(homedir(), ".config", "opencode", "skills"), join(homedir(), ".agents", "skills")])
+      logObs("skill_adopt", res, ctx.directory)
+      return { output: JSON.stringify(res, null, 2) }
+    },
+  }),
+
+  skill_uninstall: tool({
+    description:
+      "Uninstall a skill completely: deletes its DB row and removes its folder from both the live and disabled skills dirs. Irreversible. Unlike skill_archive (soft) or skill_disable (stop), this removes the skill entirely.",
+    args: {
+      name: tool.schema.string().describe("Skill name"),
+    },
+    async execute(args, ctx) {
+      const res = skillUninstall(args.name)
+      logObs("skill_uninstall", res, ctx.directory)
       return { output: JSON.stringify(res, null, 2) }
     },
   }),
