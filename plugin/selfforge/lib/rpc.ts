@@ -881,7 +881,11 @@ const DASHBOARD_HTML = `<!doctype html>
   .daycard { padding:12px 16px; font-size:12px; } .daycard + .daycard { border-top:1px solid var(--line); }
   .daycard h3 { margin:0 0 4px; font-size:13px; color:var(--strong); }
   .daycard .meta { color:var(--dim); font-size:11px; margin-bottom:6px; }
-  .daycard ul { margin:0; padding-left:18px; }
+  .daycard ul { margin:0; padding-left:0; list-style:none; }
+  .daycard li { display:flex; align-items:flex-start; gap:6px; padding:2px 0; }
+  .daycard .kind { flex:none; min-width:70px; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:4px; padding:0 4px; text-align:center; margin-top:1px; }
+  .daycard .st-done { color:#2e7d32; } .daycard .st-pending { color:#c77700; } .daycard .st-info { color:var(--dim); }
+  .daycard .review { margin:4px 0 8px; padding:6px 8px; background:rgba(127,127,127,.08); border-radius:6px; line-height:1.5; color:var(--strong); }
 </style>
 </head>
 <body>
@@ -1105,7 +1109,13 @@ async function boot(){
     memBox.innerHTML = h + "</table></div>";
   }
   const dlBox = document.getElementById("daily");
-  dlBox.innerHTML = daily && daily.length ? daily.map((d) => "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条要点</div><ul>" + d.facts.map((f) => "<li>" + esc(f) + "</li>").join("") + "</ul></div>").join("") : '<div class="empty">暂无总结</div>';
+  dlBox.innerHTML = daily && daily.length ? daily.map((d) => {
+    const stCls = { done: "st-done", pending: "st-pending", info: "st-info" };
+    const statusTxt = { done: "已落实", pending: "待跟进", info: "新信息" };
+    return "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条事项 · 已落实 " + d.done_count + " · 待跟进 " + d.pending_count + "</div>" +
+      (d.review ? "<div class=review>" + esc(d.review) + "</div>" : "") +
+      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span>" + esc(f.text) + "</span></li>").join("") + "</ul></div>";
+  }).join("") : '<div class="empty">暂无总结</div>';
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
   else {

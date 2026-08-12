@@ -132,40 +132,128 @@ export function renderSessionState(sessionId: string): string | null {
   return `## Session State\n\n<!-- fixed-size session summary (distilled, not a transcript replay) -->\n${s.summary}\n`
 }
 
-/**
- * Aggregate user directives into per-day digests (local calendar day), newest
- * first. Reads the raw message store directly so a day's summary shows even if
- * the review pipeline never ran or its distilled summary is empty.
- */
-export function dailySummaries(opts?: { limit?: number }): Array<{
+/** Skills/领域分类规则:用于把一条事项归入可读的中文主题。 */
+const KIND_RULES: Array<[string, RegExp]> = [
+  ["文档/GitHub", /readme|github|文档|README|仓库|发布|issues?/i],
+  ["界面/UI", /界面|标签|按钮|排版|布局|面板|主题|颜色|视图|显示|拖动|滚动|图标|UI/i],
+  ["数据/清理", /删除|清理|测试数据|合并|重命名|移除|去重|清理脏/i],
+  ["记忆/复盘", /记忆|总结|每日总结|观测|复盘|review|蒸馏|要点/i],
+  ["功能/能力", /功能|检查|验证|生成|插件|安装|加载|构建|测试|运行|支持|适配|兼容|修复/i],
+  ["工作区", /工作区|目录|文件夹|workspace|路径/i],
+  ["目标/检查点", /目标|检查点|goals?|checkpoint|进行中/i],
+  ["迁移/同步", /迁移|同步|导入|导出|team|snapshot|节点/i],
+  ["其他", /.*/s],
+]
+
+function classifyKind(text: string): string {
+  for (const [kind, re] of KIND_RULES) if (re.test(text)) return kind
+  return "其他"
+}
+
+const DONE_RE =
+  /已完成|已修复|已提交|已推送|已生成|已删除|已更新|已实现|已添加|已同步|已清理|已处理|已补充|已解决|完成|搞定|成功|done|fixed|pushed|committed|merged|implemented|已就绪/i
+const PENDING_RE = /未完成|还没|有待|还需要|尚未|失败|报错|无法|卡住|仍然|待办|想问|还需要|还会|有问题|请修复|请检查|仍然后/i
+
+/** 从 assistant 回复推断该事项的落实状态。 */
+function statusOf(assistantText: string): "done" | "pending" | "info" {
+  if (!assistantText) return "info"
+  if (DONE_RE.test(assistantText)) return "done"
+  if (PENDING_RE.test(assistantText)) return "pending"
+  return "info"
+}
+
+export type DailyItem = { text: string; kind: string; status: "done" | "pending" | "info" }
+
+export type DailySummary = {
   day: string
   session_count: number
   fact_count: number
-  facts: string[]
-}> {
+  done_count: number
+  pending_count: number
+  review: string
+  kind_breakdown: Array<{ kind: string; count: number }>
+  items: DailyItem[]
+}
+
+/**
+ * Aggregate per-day digests into a structured review (local calendar day),
+ * newest first. Reads the raw message store directly so a day's review shows
+ * even if the review pipeline never ran. Sorts each day's facts by their kind
+ * and infers a done/pending status from the assistant replies so the panel
+ * reads like a real retrospective instead of a paste of inputs.
+ */
+export function dailySummaries(opts?: { limit?: number }): DailySummary[] {
   const db = getDb()
   const rows = db
     .query(
-      "SELECT session_id, role, content, created_at FROM session_messages WHERE role = 'user' ORDER BY id DESC LIMIT 2000"
+      "SELECT id, session_id, role, content, created_at FROM session_messages ORDER BY id DESC LIMIT 4000"
     )
-    .all() as Array<{ session_id: string; role: string; content: string; created_at: string }>
-  const byDay = new Map<string, { sessions: Set<string>; facts: string[] }>()
-  for (const r of rows) {
+    .all() as Array<{ id: number; session_id: string; role: string; content: string; created_at: string }>
+  const byDay = new Map<string, { sessions: Set<string>; pairs: Array<{ user: string; asst: string }> }>()
+  // Pair each user message with the next assistant reply (same session, later id).
+  const ordered = [...rows].sort((a, b) => a.id - b.id)
+  const lone = new Map<string, { sid: string; day: string; content: string }>()
+  for (const r of ordered) {
     const day = (r.created_at || "").slice(0, 10)
     if (!day) continue
     let bucket = byDay.get(day)
     if (!bucket) {
-      bucket = { sessions: new Set(), facts: [] }
+      bucket = { sessions: new Set(), pairs: [] }
       byDay.set(day, bucket)
     }
     bucket.sessions.add(r.session_id)
-    bucket.facts.push(...extractFacts(r.content))
+    if (r.role === "user") {
+      lone.set(r.session_id, { sid: r.session_id, day, content: r.content })
+    } else if (r.role === "assistant") {
+      const prior = lone.get(r.session_id)
+      bucket.pairs.push({ user: prior?.content ?? "", asst: r.content })
+      if (prior) lone.delete(r.session_id)
+    }
   }
-  const out: Array<{ day: string; session_count: number; fact_count: number; facts: string[] }> = []
+  // Flush user messages that never got an assistant reply (still worth showing).
+  for (const { day, content } of lone.values()) {
+    byDay.get(day)?.pairs.push({ user: content, asst: "" })
+  }
+  const out: DailySummary[] = []
   for (const [day, b] of byDay.entries()) {
-    const facts = dedupeFacts(b.facts)
-    out.push({ day, session_count: b.sessions.size, fact_count: facts.length, facts: facts.slice(0, 20) })
+    const items: DailyItem[] = []
+    const seen = new Set<string>()
+    for (const p of b.pairs) {
+      if (p.user) {
+        for (const f of extractFacts(p.user)) {
+          const key = f.toLowerCase().replace(/\s+/g, " ").trim()
+          if (seen.has(key)) continue
+          seen.add(key)
+          items.push({ text: f, kind: classifyKind(f), status: statusOf(p.asst) })
+        }
+      }
+    }
+    if (items.length === 0) continue
+    const done = items.filter((i) => i.status === "done").length
+    const pending = items.filter((i) => i.status === "pending").length
+    const kindMap = new Map<string, number>()
+    for (const it of items) kindMap.set(it.kind, (kindMap.get(it.kind) ?? 0) + 1)
+    const kindBreakdown = [...kindMap.entries()]
+      .map(([kind, count]) => ({ kind, count }))
+      .sort((a, b2) => b2.count - a.count)
+      .slice(0, 5)
+    const topKinds = kindBreakdown
+      .slice(0, 3)
+      .map((k) => `「${k.kind}」×${k.count}`)
+      .join("、")
+    const review = `共 ${items.length} 条事项,集中在 ${topKinds || "一般"}。已落实 ${done} 条、待跟进 ${pending} 条、其余 ${items.length - done - pending} 条为新信息。`
+    out.push({
+      day,
+      session_count: b.sessions.size,
+      fact_count: items.length,
+      done_count: done,
+      pending_count: pending,
+      review,
+      kind_breakdown: kindBreakdown,
+      items: items.slice(0, 20),
+    })
   }
   out.sort((a, b) => (a.day < b.day ? 1 : -1))
-  return out.slice(0, opts?.limit ?? 14)
+  const limit = opts?.limit ?? 14
+  return out.filter((x) => x.day).slice(0, limit)
 }
