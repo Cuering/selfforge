@@ -115,8 +115,11 @@ export async function spawnReviewSdk(
       throw new Error("SDK session API unavailable")
     }
     const session = await client.session.create({ body: { title: "evolve review" } })
-    const sid: string = session?.id
-    if (!sid) throw new Error("no session id returned")
+    // SDK client wraps responses as { data, request, response }; the plugin may
+    // pass either the raw session or the wrapped result, so accept both.
+    const sid: string | undefined =
+      session?.id ?? session?.data?.id ?? (session && typeof session === "object" ? (session as any).result?.id : undefined)
+    if (!sid) throw new Error(`no session id returned (${JSON.stringify(session).slice(0, 200)})`)
     if (onSession) onSession(sid)
     await client.session.promptAsync({
       path: { id: sid },

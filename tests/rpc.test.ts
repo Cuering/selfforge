@@ -171,12 +171,15 @@ test("memory.delete archives a memory by id/uuid", async () => {
   expect(after).toBeUndefined()
 })
 
-test("memory.daily aggregates session summaries by day", async () => {
-  const { summarizeSession } = await import("../plugin/selfforge/lib/summary")
-  summarizeSession("sess-a", [{ role: "user", content: "we prefer node:sqlite for the desktop plugin" }])
+test("memory.daily aggregates user directives by day", async () => {
+  const dbm = (await import("../plugin/selfforge/lib/db")) as typeof import("../plugin/selfforge/lib/db")
+  dbm.getDb()
+    .query("INSERT INTO session_messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)")
+    .run("sess-a", "we prefer node:sqlite for the desktop plugin", new Date().toISOString())
   const r = await call("memory.daily", { limit: 7 })
   expect(r.result.length).toBeGreaterThan(0)
   expect(r.result[0].facts.length).toBeGreaterThan(0)
+  expect(r.result[0].facts.some((f: string) => f.includes("node:sqlite"))).toBe(true)
 })
 
 // Phase 6.7: generic data.edit/delete across the dashboard tables.

@@ -28,7 +28,7 @@ const FACT_SIGNALS = [
   /\bi (?:want|prefer|need|like|use|always|never|should|would|tend|decide|decided|want to)\b/i,
   /\bwe (?:use|should|don't|do not|always|never|prefer|stick to|will use|deploy|ship|build|run|install)\b/i,
   /\b(?:prefer|preferred|usually|instead of|rather than|as a rule|remember|remember that|note that|important)\b/i,
-  /(?:决定|偏好|喜欢|不喜欢|不要|应该|必须|记住|习惯|以后|采用|用|优先|避免)/,
+  /(?:决定|偏好|喜欢|不喜欢|不要|应该|必须|记住|习惯|以后|采用|优先|避免|更新|修复|修改|调整|删除|增加|新增|创建|生成|检查|验证|测试|确认|清理|同步|提交|推送|改用|换成|替换|重启|启动|配置|统一|建议|希望|需要|要求|请|务必|注意|继续|打开|关闭|改为|改成|保留)/,
   /\b(?:requirement|constraint|convention|standard|must|always|never)\b/i,
 ]
 
@@ -132,32 +132,38 @@ export function renderSessionState(sessionId: string): string | null {
   return `## Session State\n\n<!-- fixed-size session summary (distilled, not a transcript replay) -->\n${s.summary}\n`
 }
 
-/** Aggregate session summaries by calendar day (UTC), newest first. */
+/**
+ * Aggregate user directives into per-day digests (local calendar day), newest
+ * first. Reads the raw message store directly so a day's summary shows even if
+ * the review pipeline never ran or its distilled summary is empty.
+ */
 export function dailySummaries(opts?: { limit?: number }): Array<{
   day: string
   session_count: number
   fact_count: number
   facts: string[]
 }> {
-  const rows = sessionSummaryList({ limit: 500 })
+  const db = getDb()
+  const rows = db
+    .query(
+      "SELECT session_id, role, content, created_at FROM session_messages WHERE role = 'user' ORDER BY id DESC LIMIT 2000"
+    )
+    .all() as Array<{ session_id: string; role: string; content: string; created_at: string }>
   const byDay = new Map<string, { sessions: Set<string>; facts: string[] }>()
-  for (const s of rows) {
-    const day = (s.updated_at || "").slice(0, 10)
+  for (const r of rows) {
+    const day = (r.created_at || "").slice(0, 10)
     if (!day) continue
     let bucket = byDay.get(day)
     if (!bucket) {
       bucket = { sessions: new Set(), facts: [] }
       byDay.set(day, bucket)
     }
-    bucket.sessions.add(s.session_id)
-    for (const line of (s.summary || "").split("\n")) {
-      const fact = line.replace(/^\d+\.\s*/, "").trim()
-      if (fact) bucket.facts.push(fact)
-    }
+    bucket.sessions.add(r.session_id)
+    bucket.facts.push(...extractFacts(r.content))
   }
   const out: Array<{ day: string; session_count: number; fact_count: number; facts: string[] }> = []
   for (const [day, b] of byDay.entries()) {
-    const facts = [...new Set(b.facts)]
+    const facts = dedupeFacts(b.facts)
     out.push({ day, session_count: b.sessions.size, fact_count: facts.length, facts: facts.slice(0, 20) })
   }
   out.sort((a, b) => (a.day < b.day ? 1 : -1))
