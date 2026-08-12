@@ -67,6 +67,18 @@ function dedupeFacts(facts: string[]): string[] {
   return out
 }
 
+/** Extract a short solution sentence from an assistant reply. */
+function extractSolution(text: string): string {
+  if (!text) return ""
+  for (const s of sentenceSplit(text)) {
+    const t = s.trim()
+    if (t.length < 8 || t.length > 200) continue
+    if (isTrivial(t)) continue
+    return truncate(t, 140)
+  }
+  return ""
+}
+
 /** Cap summary output so injected state is bounded (Metis fixed-size state). */
 function capSummary(facts: string[]): { summary: string; fact_count: number } {
   const maxFacts = Number(getConfig("session_summary_max_facts", "10")) || 10
@@ -162,7 +174,7 @@ function statusOf(assistantText: string): "done" | "pending" | "info" {
   return "info"
 }
 
-export type DailyItem = { text: string; kind: string; status: "done" | "pending" | "info" }
+export type DailyItem = { problem: string; solution: string; kind: string; status: "done" | "pending" | "info" }
 
 export type DailySummary = {
   day: string
@@ -220,11 +232,12 @@ export function dailySummaries(opts?: { limit?: number }): DailySummary[] {
     const seen = new Set<string>()
     for (const p of b.pairs) {
       if (p.user) {
+        const solution = extractSolution(p.asst)
         for (const f of extractFacts(p.user)) {
           const key = f.toLowerCase().replace(/\s+/g, " ").trim()
           if (seen.has(key)) continue
           seen.add(key)
-          items.push({ text: f, kind: classifyKind(f), status: statusOf(p.asst) })
+          items.push({ problem: f, solution, kind: classifyKind(f), status: statusOf(p.asst) })
         }
       }
     }

@@ -179,7 +179,7 @@ test("memory.daily aggregates user directives by day", async () => {
   const r = await call("memory.daily", { limit: 7 })
   expect(r.result.length).toBeGreaterThan(0)
   expect(r.result[0].items.length).toBeGreaterThan(0)
-  expect(r.result[0].items.some((f: any) => f.text.includes("node:sqlite"))).toBe(true)
+  expect(r.result[0].items.some((f: any) => f.problem.includes("node:sqlite"))).toBe(true)
   expect(r.result[0].review.length).toBeGreaterThan(0)
   expect(typeof r.result[0].done_count).toBe("number")
 })

@@ -1161,7 +1161,7 @@ async function boot(){
     const statusTxt = { done: "已落实", pending: "待跟进", info: "新信息" };
     return "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条事项 · 已落实 " + d.done_count + " · 待跟进 " + d.pending_count + "</div>" +
       (d.review ? "<div class=review>" + esc(d.review) + "</div>" : "") +
-      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span>" + esc(f.text) + "</span></li>").join("") + "</ul></div>";
+      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span><b>问题:</b> " + esc(f.problem) + (f.solution ? "<br><b>解决:</b> " + esc(f.solution) : "") + "</span></li>").join("") + "</ul></div>";
   }).join("") : '<div class="empty">暂无总结</div>';
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
