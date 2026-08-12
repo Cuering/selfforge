@@ -1,6 +1,11 @@
 ﻿import type { Plugin } from "@opencode-ai/plugin"
 import { initDb, getConfig, logObs, closeDb, vacuumDb } from "./selfforge/lib/db"
-import { memoryDecay, composeMemoryContext } from "./selfforge/lib/memory"
+import {
+  memoryDecay,
+  composeMemoryContext,
+  scheduleContextRefresh,
+  liveMemoryInjection,
+} from "./selfforge/lib/memory"
 import { syncSkillsToDisk, recordSkillUse } from "./selfforge/lib/skills"
 import { goalAdvisory, maintainCheckpoints } from "./selfforge/lib/goals"
 import { evolutionAdvisory } from "./selfforge/lib/evolution"
@@ -39,8 +44,9 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     wsScope = scopeFor(dir, fingerprintOf(dir))
   } catch {}
 
-  composeMemoryContext({ wsScope: wsScope ?? undefined })
-  logObs("plugin_loaded", { version: "1.8.0" }, projectName())
+  // Seed instructions file + register default scope for later hot reloads.
+  scheduleContextRefresh({ wsScope: wsScope ?? undefined, immediate: true })
+  logObs("plugin_loaded", { version: "1.9.0" }, projectName())
   try {
     touchWorkspace(directory || worktree || process.cwd())
   } catch {}
@@ -132,6 +138,10 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
       try {
         summarizeSession(sessionId, captured, s.turn_count)
         facts = getSessionSummary(sessionId)?.fact_count ?? 0
+        scheduleContextRefresh({
+          wsScope: wsScope ?? undefined,
+          includeSession: sessionId,
+        })
       } catch {}
       // Single consolidated observation per trigger (was 3 noisy rows: review_spawned,
       // session_summary_built, review_triggered).
@@ -236,11 +246,15 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
                 lastMaintenance = nowMs
               }
             } catch {}
-            // housekeeping: dedupe workspaces + prune done/useless checkpoints
+            // housekeeping: dedupe workspaces + prune checkpoints + expire unused skills (90d)
             try {
               if (nowMs - lastMaintenance >= maintenanceInterval()) {
                 mergeDuplicateWorkspaces()
                 maintainCheckpoints()
+                try {
+                  const { curatorRun } = require("./selfforge/lib/review")
+                  curatorRun()
+                } catch {}
                 lastMaintenance = nowMs
               }
             } catch {}
@@ -279,7 +293,19 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
                 if (buf.length > 0) {
                   summarizeSession(sid, buf, s.turn_count)
                   logObs("session_summary_auto", { session: sid, facts: getSessionSummary(sid)?.fact_count ?? 0 }, s.project || projectName())
+                  // Fuse distilled session state into memory.context.md for next instructions load.
+                  scheduleContextRefresh({
+                    wsScope: wsScope ?? undefined,
+                    includeSession: sid,
+                    immediate: true,
+                  })
                 }
+              } else if (st?.summary) {
+                // Keep session state attached even when summary already existed.
+                scheduleContextRefresh({
+                  wsScope: wsScope ?? undefined,
+                  includeSession: sid,
+                })
               }
             } catch {}
             break
@@ -313,6 +339,15 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     "experimental.chat.system.transform": async (input: any, output: { system: string[] }) => {
       try {
         const advisories: string[] = []
+        // Live reuse: session state + confirmed memories written since last file compose.
+        // Covers the gap where opencode caches instructions for the open session.
+        try {
+          const live = liveMemoryInjection({
+            sessionID: input?.sessionID ? String(input.sessionID) : undefined,
+            wsScope: wsScope ?? undefined,
+          })
+          if (live) advisories.push(live)
+        } catch {}
         const ga = goalAdvisory()
         if (ga) advisories.push(`## Active Goals\n${ga}`)
         const ea = evolutionAdvisory()
@@ -321,6 +356,30 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
           output.system.push(
             `\n\n<!-- selfforge advisory -->\n${advisories.join("\n\n")}\n\nThese are auto-generated signals. Context they describe is authoritative for this session's prior decisions; act on evolution candidates only when relevant. Most sessions need no action.`
           )
+        }
+      } catch {}
+    },
+
+    "experimental.session.compacting": async (input: any, output: { context: string[]; prompt?: string }) => {
+      try {
+        const live = liveMemoryInjection({
+          sessionID: input?.sessionID ? String(input.sessionID) : undefined,
+          wsScope: wsScope ?? undefined,
+          limit: 12,
+        })
+        if (live) output.context.push(live)
+        else {
+          // Fallback: push the on-disk snapshot so compaction still sees durable lessons.
+          try {
+            const { readFileSync } = require("node:fs")
+            const { CONTEXT_FILE } = require("./selfforge/lib/memory")
+            const md = readFileSync(CONTEXT_FILE, "utf8")
+            if (md && md.length > 80) {
+              output.context.push(
+                `<!-- selfforge memory.context.md -->\n${md.slice(0, 6000)}${md.length > 6000 ? "\n…" : ""}`
+              )
+            }
+          } catch {}
         }
       } catch {}
     },

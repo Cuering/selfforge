@@ -1,4 +1,5 @@
 import { getDb, now, stamp } from "./db"
+import { scheduleContextRefresh } from "./memory"
 
 export type UserProfile = {
   id: number
@@ -19,6 +20,7 @@ export function userAdd(keyword: string, content: string) {
     db.query(
       "UPDATE user_profile SET content = ?, updated_at = ?, deleted = 0 WHERE id = ?"
     ).run(content, ts, existing.id)
+    scheduleContextRefresh()
     return { keyword, content, id: existing.id, uuid: existing.uuid }
   }
   const st = stamp()
@@ -27,6 +29,7 @@ export function userAdd(keyword: string, content: string) {
       "INSERT INTO user_profile (uuid, origin, keyword, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
     )
     .run(st.uuid, st.origin, keyword, content, ts, ts)
+  scheduleContextRefresh()
   return { keyword, content, id: Number(info.lastInsertRowid), uuid: st.uuid }
 }
 
@@ -40,5 +43,6 @@ export function userRemove(keyword: string) {
   const res = getDb()
     .query("UPDATE user_profile SET deleted = 1, updated_at = ? WHERE keyword = ? AND deleted = 0")
     .run(now(), keyword)
+  if (Number(res.changes) > 0) scheduleContextRefresh()
   return { removed: Number(res.changes) }
 }

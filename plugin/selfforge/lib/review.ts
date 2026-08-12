@@ -266,32 +266,81 @@ function safeFtsQuery(q: string): string {
     .join(" ")
 }
 
+/**
+ * Skill expiry / retirement.
+ * Default: 90 days without a trial (no last_used_at, or last_used older than
+ * expire_unused_days; if never used, age is measured from created_at) → archive
+ * + move off the live skills tree when possible. stale_after_days (default 60)
+ * only marks active/candidate as stale as a warning stage.
+ */
+/**
+ * Unified expiry: skills (90d no-use), memories (decay + TTL), rules (no longer
+ * observed for a while). Called on idle maintenance. Only archives inactive /
+ * long-untouched items; active skills are exempt.
+ */
 export function curatorRun() {
   const db = getDb()
-  const staleAfter = Number(getConfig("stale_after_days", "30")) * 86400000
-  const archiveAfter = Number(getConfig("archive_after_days", "90")) * 86400000
+  const expireUnusedDays = Number(getConfig("expire_unused_days", getConfig("archive_after_days", "90"))) || 90
+  const staleAfter = Number(getConfig("stale_after_days", "60")) * 86400000
+  const expireAfter = expireUnusedDays * 86400000
+  const ruleExpireDays = Number(getConfig("rule_expire_days", "180")) || 180
   const nowMs = Date.now()
-  const stats = { stale: 0, archived: 0 }
-  for (const skill of skillList()) {
-    if (skill.status !== "active") continue
+  const ts = new Date().toISOString()
+  const stats = { stale: 0, archived: 0, skipped: 0, memories_archived: 0, rules_archived: 0 }
+
+  // --- Skills: 90d no-use → archive (inactive only) ---
+  for (const skill of skillList({ includeDeleted: false })) {
+    if (skill.status === "archived" || skill.status === "disabled") {
+      stats.skipped++
+      continue
+    }
     const lastUse = skill.last_used_at ? new Date(skill.last_used_at).getTime() : 0
-    if (lastUse === 0) continue
-    const age = nowMs - lastUse
-    if (age > archiveAfter) {
-      // lifecycle-aware archive: tombstone set so the removal replicates
-      db.query("UPDATE skills SET status = 'archived', deleted = 1, updated_at = ? WHERE id = ?").run(
-        new Date().toISOString(),
-        skill.id
-      )
+    const created = skill.created_at ? new Date(skill.created_at).getTime() : nowMs
+    const anchor = lastUse > 0 ? lastUse : created
+    const age = nowMs - anchor
+    if (age > expireAfter && skill.status !== "active") {
+      db.query("UPDATE skills SET status = 'archived', deleted = 1, updated_at = ? WHERE id = ?").run(ts, skill.id)
+      // Best-effort: move disk skill out of opencode scan tree
+      try {
+        const { existsSync, mkdirSync, renameSync } = require("node:fs")
+        const { join } = require("node:path")
+        const { SKILLS_DIR, ARCHIVE_DIR } = require("./db")
+        const src = join(SKILLS_DIR, skill.name)
+        if (existsSync(src)) {
+          mkdirSync(ARCHIVE_DIR, { recursive: true })
+          const dst = join(ARCHIVE_DIR, skill.name)
+          if (existsSync(dst)) renameSync(dst, dst + "-" + Date.now())
+          renameSync(src, dst)
+        }
+      } catch {}
       stats.archived++
-    } else if (age > staleAfter) {
-      db.query("UPDATE skills SET status = 'stale', updated_at = ? WHERE id = ?").run(
-        new Date().toISOString(),
-        skill.id
-      )
+    } else if (age > staleAfter && (skill.status === "active" || skill.status === "candidate")) {
+      db.query("UPDATE skills SET status = 'stale', updated_at = ? WHERE id = ?").run(ts, skill.id)
       stats.stale++
     }
   }
+
+  // --- Memories: TTL expiry + inactivity archive (reuse memoryDecay) ---
+  try {
+    const { memoryDecay } = require("./memory")
+    const r = memoryDecay()
+    stats.memories_archived = r.archived ?? 0
+  } catch {}
+
+  // --- Rules: expire rules not re-observed for a long time ---
+  try {
+    const rows = db
+      .query("SELECT id, rule, updated_at, created_at, written_to FROM rules WHERE deleted = 0")
+      .all() as Array<{ id: number; rule: string; updated_at: string; created_at: string; written_to: number | null }>
+    for (const r of rows) {
+      const last = r.updated_at ? new Date(r.updated_at).getTime() : r.created_at ? new Date(r.created_at).getTime() : nowMs
+      if (nowMs - last > ruleExpireDays * 86400000) {
+        db.query("UPDATE rules SET deleted = 1, updated_at = ? WHERE id = ?").run(ts, r.id)
+        stats.rules_archived++
+      }
+    }
+  } catch {}
+
   logObs("curator_run", stats)
   return stats
 }

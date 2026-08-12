@@ -1,23 +1,25 @@
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { spawn } from "node:child_process"
 import { readFileSync, existsSync, unlinkSync } from "node:fs"
+import { spawn } from "node:child_process"
 import { join, dirname } from "node:path"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { getDb, nodeId, clock, advanceClockTo, logObs, now, EVOLVE_HOME } from "./db"
 import { exportSnapshot, importSnapshot, transferStatus, SNAPSHOT_FORMAT } from "./transfer"
 import { memoryList, memoryUpdateById, memoryArchiveById, memoryAdd } from "./memory"
-import { dailySummaries, summarizeSession, sessionSummaryList } from "./summary"
-import { skillCreate, skillList, skillStatus, skillArchive, skillPatch, skillInfo, skillEnable, skillDisable, skillUninstall, skillInstallFromDir, adoptOpencodeSkills } from "./skills"
+import { dailySummaries } from "./summary"
+import { skillCreate, skillList, skillStatus, skillArchive, skillPatch, skillInfo, skillEnable, skillDisable, skillUninstall, skillInstallFromDir, adoptOpencodeSkills, skillFeedback } from "./skills"
+import { curatorRun } from "./review"
 import { workspaceList, mergeDuplicateWorkspaces } from "./workspace"
 import { goalStatus, goalStart, maintainCheckpoints } from "./goals"
 import { ruleObserve, ruleStatus } from "./rules"
 import { evolutionPropose, evolutionList } from "./evolution"
 import { patternCandidates, recordPattern } from "./patterns"
 import { runRepair, recordSignal } from "./repair"
-import { getSession, sessionSearch } from "./review"
-
+// getSession, sessionSearch removed
+import { DASHBOARD_HTML } from "./dashboard-html"
+import { dashLog, dashLogList, dashLogClear, dashLogCount } from "./dashboard-log"
 /**
  * Phase 3 — local JSON-RPC endpoint (HTTP/1.1, zero dependencies).
  *
@@ -103,6 +105,7 @@ async function handle(method: string, params: any): Promise<any> {
     }
     case "memory.daily":
       return dailySummaries({ limit: Number(params?.limit ?? 14) })
+    // daily.refine removed
     case "skills.create": {
       if (!params?.name || !params?.description) throw new Error("params.name and params.description required")
       return skillCreate(String(params.name), String(params.description), params.body ? String(params.body) : "")
@@ -167,6 +170,18 @@ async function handle(method: string, params: any): Promise<any> {
     case "checkpoints.maintain": {
       return maintainCheckpoints()
     }
+    case "diagnostics.list":
+      return { entries: dashLogList(Number(params?.limit ?? 50)), ...dashLogCount() }
+    case "diagnostics.clear":
+      return dashLogClear()
+    case "diagnostics.report": {
+      const level = params?.level === "warn" || params?.level === "info" ? params.level : "error"
+      const entry = dashLog(level, String(params?.source || "client"), String(params?.message || "unknown"), {
+        stack: params?.stack ? String(params.stack) : undefined,
+        meta: params?.meta && typeof params.meta === "object" ? params.meta : undefined,
+      })
+      return { ok: true, id: entry.id }
+    }
     case "data.update": {
       const updated = updateRow(params?.kind, params?.id, params)
       return { ok: updated.ok, message: updated.message }
@@ -175,22 +190,9 @@ async function handle(method: string, params: any): Promise<any> {
       const del = deleteRow(params?.kind, params?.id)
       return { ok: del.ok, message: del.message }
     }
-    case "session.distill": {
-      const sessions = sessionSummaryList({ limit: 500 })
-      const target = params?.sessionId ? String(params.sessionId) : (sessions[0]?.session_id ?? "")
-      if (!target) throw new Error("no session to distill")
-      const s = getSession(target)
-      let buf: Array<{ role: string; content: string }> = []
-      try {
-        buf = JSON.parse(s.buffer || "[]")
-      } catch {}
-      if (buf.length === 0) {
-        const hits = sessionSearch("", { limit: 100 }).filter((h) => h.session_id === target)
-        buf = hits.map((h) => ({ role: h.role, content: h.content }))
-      }
-      const row = summarizeSession(target, buf, s.turn_count)
-      return { session_id: target, fact_count: row.fact_count, summary: row.summary }
-    }
+    // session.distill removed
+    case "dashboard.restart":
+      return restartDashboard(Number(params?.port ?? 9210))
     case "dashboard.seed": {
       const d = apiDashboard()
       const created: Record<string, unknown> = {}
@@ -226,6 +228,10 @@ async function handle(method: string, params: any): Promise<any> {
         description: s.description,
         status: s.status,
         eta: s.eta,
+        trials: s.trials_attempted ?? 0,
+        passed: s.trials_passed ?? 0,
+        usage: s.usage_count ?? 0,
+        last_used_at: s.last_used_at,
       }))
       return { skills: list, status: skillStatus() }
     }
@@ -237,6 +243,13 @@ async function handle(method: string, params: any): Promise<any> {
       return skillUninstall(String(params?.name))
     case "skills.info":
       return skillInfo(String(params?.name))
+    case "skills.feedback": {
+      if (!params?.name) throw new Error("params.name required")
+      const positive = params.positive !== false && params.positive !== "false" && params.positive !== 0
+      return skillFeedback(String(params.name), Boolean(positive))
+    }
+    case "skills.curator":
+      return curatorRun()
     case "skills.install": {
       if (!params?.dir) throw new Error("params.dir required")
       return skillInstallFromDir(String(params.dir))
@@ -419,6 +432,23 @@ export async function stopDashboard(): Promise<{ ok: boolean }> {
   return { ok: true }
 }
 
+/**
+ * Hot restart: spawn a replacement daemon, then schedule this process to exit
+ * after the RPC response has been flushed. The new daemon retries the target
+ * port for several seconds so it wins the same port once the old one exits.
+ */
+export async function restartDashboard(port = 9210): Promise<{ ok: boolean; pid: number | null }> {
+  const child = spawnDaemon(port)
+  if (!child) return { ok: false, pid: null }
+  // Give the child time to start and the response to flush, then exit.
+  setTimeout(() => {
+    try {
+      process.exit(0)
+    } catch {}
+  }, 800)
+  return { ok: true, pid: child.pid }
+}
+
 /** Plain-text overview of the engine, rendered from the same data as the JSON APIs. */
 export function dashboardText(): string {
   const d = apiDashboard()
@@ -495,6 +525,8 @@ function apiSkills() {
     eta: s.eta,
     trials: s.trials_attempted ?? 0,
     passed: s.trials_passed ?? 0,
+    usage: s.usage_count ?? 0,
+    last_used_at: s.last_used_at,
   }))
 }
 
@@ -699,6 +731,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, url: strin
   if (route === "/api/rules") return json(res, apiRules())
   if (route === "/api/checkpoints") return json(res, apiCheckpoints())
   if (route === "/api/evolution") return json(res, apiEvolution())
+  if (route === "/api/errors") return json(res, { entries: dashLogList(100), ...dashLogCount() })
   res.writeHead(404, { "Content-Type": "application/json" })
   res.end(JSON.stringify({ error: `not found: ${route}` }))
 }
@@ -744,20 +777,32 @@ export async function serve(port = 9210): Promise<number> {
         res.writeHead(200, { "Content-Type": "application/json" })
         res.end(JSON.stringify({ jsonrpc: "2.0", id, result }))
       } catch (err) {
+        const e = err as Error
+        dashLog("error", `rpc:${String(reqObj.method)}`, e.message, { stack: e.stack })
         res.writeHead(200, { "Content-Type": "application/json" })
-        res.end(JSON.stringify(rpcError(id, -32000, (err as Error).message)))
+        res.end(JSON.stringify(rpcError(id, -32000, e.message)))
       }
     } catch (err) {
+      const e = err as Error
+      dashLog("error", "rpc:parse", e.message, { stack: e.stack })
       res.writeHead(400, { "Content-Type": "application/json" })
-      res.end(JSON.stringify(rpcError(null, -32700, (err as Error).message)))
+      res.end(JSON.stringify(rpcError(null, -32700, e.message)))
     }
   })
   activeServer = server
   await new Promise<void>((resolve, reject) => {
-    const tryListen = (p: number) => {
+    const tryListen = (p: number, retriesLeft = 0) => {
       server.once("error", (err: NodeJS.ErrnoException) => {
-        if (err.code === "EADDRINUSE" && p < port + 64) {
-          tryListen(p + 1)
+        if (err.code === "EADDRINUSE") {
+          // Hot restart: retry the same port up to 6s (24 x 250ms) before drifting
+          if (p === port && retriesLeft < 24) {
+            setTimeout(() => tryListen(p, retriesLeft + 1), 250)
+          } else if (p < port + 64) {
+            tryListen(p + 1)
+          } else {
+            activeServer = null
+            reject(err)
+          }
         } else {
           activeServer = null
           reject(err)
@@ -798,12 +843,21 @@ export function serveEphemeral(): Promise<{ port: number; close: () => void }> {
         const raw = await readBody(req)
         const reqObj = JSON.parse(raw) as RpcRequest
         const id = reqObj.id ?? null
-        const result = await handle(String(reqObj.method), reqObj.params)
-        res.writeHead(200, { "Content-Type": "application/json" })
-        res.end(JSON.stringify({ jsonrpc: "2.0", id, result }))
+        try {
+          const result = await handle(String(reqObj.method), reqObj.params)
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ jsonrpc: "2.0", id, result }))
+        } catch (err) {
+          const e = err as Error
+          dashLog("error", `rpc:${String(reqObj.method)}`, e.message, { stack: e.stack })
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify(rpcError(id, -32000, e.message)))
+        }
       } catch (err) {
+        const e = err as Error
+        dashLog("error", "rpc:parse", e.message, { stack: e.stack })
         res.writeHead(500, { "Content-Type": "application/json" })
-        res.end(JSON.stringify(rpcError(null, -32000, (err as Error).message)))
+        res.end(JSON.stringify(rpcError(null, -32000, e.message)))
       }
     })
     server.listen(0, () => {
@@ -814,378 +868,3 @@ export function serveEphemeral(): Promise<{ port: number; close: () => void }> {
   })
 }
 
-const DASHBOARD_HTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>selfforge</title>
-<style>
-  :root {
-    --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#d7dbe2; --dim:#8b93a3;
-    --acc:#5b8def; --acc-txt:#9ec2ff; --on-acc:#fff; --good:#4caf7d; --warn:#d9a13b; --bad:#e2605b;
-    --strong:#fff; --hover:#1c2130; --cnt-bg:#262b36;
-    --t-hot-bg:#3d2e1e; --t-warm-bg:#1e2a3d; --t-cold-bg:#262b36; --t-evictable-bg:#332a1a;
-    --s-active-bg:#143524; --s-candidate-bg:#1e2a3d; --s-trial-bg:#1e2a3d; --s-archived-bg:#3a1e1e; --s-stale-bg:#332a1a;
-  }
-  [data-theme="light"] {
-    --bg:#f5f7fa; --panel:#ffffff; --line:#e1e6ef; --fg:#1c2733; --dim:#5c6b7a;
-    --acc:#3b6fe0; --acc-txt:#1d4fb8; --on-acc:#fff; --good:#2e9e62; --warn:#b8811b; --bad:#d4524d;
-    --strong:#0f1115; --hover:#eef2f8; --cnt-bg:#e7ecf3;
-    --t-hot-bg:#fbe9d0; --t-warm-bg:#dce7fa; --t-cold-bg:#e8edf3; --t-evictable-bg:#f3e6c8;
-    --s-active-bg:#d9f0e2; --s-candidate-bg:#dce7fa; --s-trial-bg:#e3ecfb; --s-archived-bg:#f7dcdb; --s-stale-bg:#f3e6c8;
-  }
-  * { box-sizing:border-box; }
-  html,body { height:100%; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; display:flex; flex-direction:column; overflow:hidden; }
-  header { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; flex:none; }
-  header h1 { font-size:17px; margin:0; color:var(--strong); }
-  header .sub { color:var(--dim); font-size:12px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  header .actions { margin-left:auto; display:flex; gap:8px; }
-  header button { background:var(--acc); color:var(--on-acc); border:0; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
-  header button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
-  header button.ghost:hover { border-color:var(--acc); color:var(--acc); }
-  .overview { padding:12px 20px; border-bottom:1px solid var(--line); flex:none; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(104px,1fr)); gap:8px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
-  .card b { display:block; font-size:22px; color:var(--strong); line-height:1.2; }
-  .card span { color:var(--dim); font-size:11px; }
-  .layout { flex:1; display:flex; min-height:0; }
-  nav { width:158px; flex:none; border-right:1px solid var(--line); padding:12px 8px; overflow-y:auto; }
-  nav button { display:flex; align-items:center; justify-content:space-between; width:100%; background:transparent; border:0; border-radius:7px; color:var(--dim); padding:9px 12px; font-size:13px; cursor:pointer; margin-bottom:2px; font-family:inherit; }
-  nav button:hover { background:var(--hover); color:var(--strong); }
-  nav button.active { background:var(--acc); color:var(--on-acc); }
-  nav button .cnt { background:var(--cnt-bg); color:var(--dim); border-radius:99px; font-size:11px; padding:1px 8px; }
-  nav button.active .cnt { background:rgba(255,255,255,.22); color:var(--on-acc); }
-  main { flex:1; padding:16px 22px; overflow-y:auto; min-width:0; }
-  .tab-title { font-size:15px; color:var(--strong); margin:0 0 12px; }
-  .toolbar { display:flex; gap:8px; margin:-4px 0 12px; min-height:30px; align-items:center; }
-  .toolbar .tab-desc { color:var(--dim); font-size:12px; margin-right:auto; }
-  .toolbar button.gen-btn { background:var(--acc); color:var(--on-acc); border:0; border-radius:6px; padding:4px 12px; font-size:12px; cursor:pointer; }
-  .toolbar button.gen-btn:hover { filter:brightness(1.1); }
-  .pane { display:none; }
-  .pane.active { display:block; }
-  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .table-wrap { overflow-x:auto; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--dim); font-weight:500; font-size:12px; white-space:nowrap; }
-  .table-wrap table th:last-child, .table-wrap table td:last-child { position:sticky; right:0; background:var(--panel); border-left:1px solid var(--line); z-index:1; }
-  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
-  tbody tr:last-child td { border-bottom:0; }
-  td .tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11px; margin-right:6px; white-space:nowrap; }
-  td .st { color:var(--dim); font-size:11px; }
-  td .content-cell { min-width:240px; word-break:break-word; }
-  .t-hot{background:var(--t-hot-bg);color:var(--warn);} .t-warm{background:var(--t-warm-bg);color:var(--acc-txt);} .t-cold{background:var(--t-cold-bg);color:var(--dim);} .t-evictable{background:var(--t-evictable-bg);color:var(--warn);}
-  .s-active{background:var(--s-active-bg);color:var(--good);} .s-candidate{background:var(--s-candidate-bg);color:var(--acc-txt);} .s-trial{background:var(--s-trial-bg);color:var(--acc-txt);} .s-archived{background:var(--s-archived-bg);color:var(--bad);} .s-stale{background:var(--s-stale-bg);color:var(--warn);}
-  .muted { color:var(--dim); }
-  pre { margin:0; padding:10px 12px; overflow:auto; max-height:320px; font-size:11px; }
-  .empty { padding:16px; color:var(--dim); font-size:12px; }
-  td .act { display:inline-flex; gap:6px; white-space:nowrap; }
-  td .act button { background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:5px; padding:2px 10px; font-size:12px; cursor:pointer; white-space:nowrap; }
-  td .act button:hover { color:var(--strong); border-color:var(--acc); }
-  td .act button.del:hover { border-color:var(--bad); color:var(--bad); }
-  .daycard { padding:12px 16px; font-size:12px; } .daycard + .daycard { border-top:1px solid var(--line); }
-  .daycard h3 { margin:0 0 4px; font-size:13px; color:var(--strong); }
-  .daycard .meta { color:var(--dim); font-size:11px; margin-bottom:6px; }
-  .daycard ul { margin:0; padding-left:0; list-style:none; }
-  .daycard li { display:flex; align-items:flex-start; gap:6px; padding:2px 0; }
-  .daycard .kind { flex:none; min-width:70px; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:4px; padding:0 4px; text-align:center; margin-top:1px; white-space:nowrap; }
-  .daycard .st-done { color:#2e7d32; white-space:nowrap; } .daycard .st-pending { color:#c77700; white-space:nowrap; } .daycard .st-info { color:var(--dim); white-space:nowrap; }
-  .daycard .review { margin:4px 0 8px; padding:6px 8px; background:rgba(127,127,127,.08); border-radius:6px; line-height:1.5; color:var(--strong); }
-</style>
-</head>
-<body>
-<header>
-  <h1>selfforge</h1>
-  <span class="sub" id="sub">—</span>
-  <div class="actions">
-    <button class="ghost" id="themeBtn" onclick="toggleTheme()">夜间</button>
-    <button onclick="location.reload()">刷新</button>
-  </div>
-</header>
-<div class="overview"><div class="cards" id="counts"></div></div>
-<div class="layout">
-  <nav id="nav"></nav>
-  <main id="main">
-    <h2 class="tab-title" id="tabTitle">记忆</h2>
-    <div class="toolbar" id="toolbar"></div>
-    <section class="pane active" id="pane-memories"><div class="panel" id="memories"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-skills"><div class="panel" id="skills"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-rules"><div class="panel" id="rules"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-goals"><div class="panel" id="goals"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-checkpoints"><div class="panel" id="checkpoints"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-evolution"><div class="panel" id="evolution"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-daily"><div class="panel" id="daily"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-repairs"><div class="panel" id="repairs"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-patterns"><div class="panel" id="patterns"><div class="empty">加载中…</div></div></section>
-    <section class="pane" id="pane-workspaces"><div class="panel" id="workspaces"><div class="empty">加载中…</div></div></section>
-  </main>
-</div>
-<script>
-function applyTheme(t){
-  document.documentElement.setAttribute("data-theme", t);
-  try { localStorage.setItem("theme", t); } catch (e) {}
-  document.getElementById("themeBtn").textContent = t === "light" ? "夜间" : "日间";
-}
-function toggleTheme(){
-  applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
-}
-(function(){
-  let t = "dark";
-  try { t = localStorage.getItem("theme") || t; } catch (e) {}
-  if (t !== "light" && t !== "dark") t = "dark";
-  if (t === "dark" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) t = "light";
-  applyTheme(t);
-})();
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
-async function get(p){ const r = await fetch(p); return r.json(); }
-async function rpc(method, params){
-  const r = await fetch("/", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ jsonrpc:"2.0", id:1, method, params }) });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.message);
-  return j.result;
-}
-const TIER_ZH = { hot:"热", warm:"温", cold:"冷", evictable:"可淘汰" };
-const STATUS_ZH = { confirmed:"已确认", candidate:"候选", archived:"已归档", stale:"过期", active:"活跃", trial:"试用", disabled:"已停止" };
-const LIFECYCLE_ZH = { temporary:"临时", active:"活跃", permanent:"长期", archived:"已归档" };
-const GOAL_ZH = { active:"进行中", completed:"已完成", stopped:"已停止" };
-const REPAIR_ZH = { "failure-burst":"失败爆发", "user.negative":"用户差评", "user.preference":"用户偏好", manual:"手动", failure:"失败", success:"成功" };
-const COUNT_ZH = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", repairs:"修复", patterns:"模式", workspaces:"工作区" };
-const TABS = [
-  { id:"memories", label:"记忆", key:"memories", desc:"长期知识库，按强度分级，可编辑内容/删除(归档)" },
-  { id:"skills", label:"技能", key:"skills", desc:"可复用技术/工作流，candidate→active→archived", gen:{ method:"skills.create", prompt:"技能名称：", desc:"技能描述：", args:["name","description"] } },
-  { id:"rules", label:"规则", key:"rules", desc:"行为规则，可升级写入 AGENTS.md", gen:{ method:"rules.create", prompt:"规则内容：", args:["rule"] } },
-  { id:"goals", label:"目标", key:"goals", desc:"目标驱动循环，含检查点追踪", gen:{ method:"goals.create", prompt:"目标：", desc:"北星目标（可选）：", args:["goal","northStar"] } },
-  { id:"checkpoints", label:"检查点", key:"checkpoints", desc:"目标下 CP0..CP6.5 的阶段状态" },
-  { id:"evolution", label:"演进", key:"evolution", desc:"技能优化候选，待审后应用/拒绝", gen:{ method:"evolution.create", prompt:"技能名：", desc:"策略(harden/innovate/repair/generalize)：", args:["skill","strategy"] } },
-  { id:"daily", label:"每日总结", key:"daily", desc:"按天聚合的会话要点(蒸馏提取)", distill:true },
-  { id:"repairs", label:"修复草稿", key:"repairs", desc:"工具失败模式的修复建议", gen:{ method:"repairs.create", prompt:"工具名：", args:["tool"] } },
-  { id:"patterns", label:"模式候选", key:"patterns", desc:"重复失败模式，达阈值提升为记忆", gen:{ method:"patterns.record", prompt:"工具名：", args:["tool"] } },
-  { id:"workspaces", label:"工作区", key:"workspaces", desc:"访问过的工作目录指纹" }
-];
-const TITLES = { memories:"记忆", skills:"技能", rules:"规则", goals:"目标", checkpoints:"检查点", evolution:"演进", daily:"每日总结", repairs:"修复草稿", patterns:"模式候选", workspaces:"工作区" };
-const KIND_EDIT_LABEL = {
-  skills:"编辑技能描述：", rules:"编辑规则内容：", goals:"编辑目标：", checkpoints:"编辑备注：", evolution:"编辑候选内容：", repairs:"编辑草稿内容：", patterns:"编辑签名：", workspaces:"编辑名称："
-};
-const KIND_EDIT_FIELD = { skills:"description", rules:"rule", goals:"goal", checkpoints:"notes", evolution:"candidate", repairs:"draft", patterns:"sig_label", workspaces:"name" };
-function tierBadge(t, label){ return '<span class="tag t-' + t + '">' + esc(label || t) + "</span>"; }
-function statusBadge(s, label){ return '<span class="tag s-' + s + '">' + esc(label || s) + "</span>"; }
-function zh(obj, key, fb){ return (obj && key && obj[key]) || key || fb || ""; }
-function memRow(m){
-  const id = m.uuid || m.id;
-  const tag = tierBadge(m.tier, zh(TIER_ZH, m.tier, m.tier));
-  const act = '<span class=act><button onclick="editMem(' + "'" + id + "'" + ')">编辑</button><button class=del onclick="delMem(' + "'" + id + "'" + ')">删除</button></span>';
-  return "<tr><td>" + tag + "<span class=st>强度 " + m.strength + "</span></td><td class=content-cell>" + esc(m.content) + "</td><td class=muted>" + esc(m.scope || "") + "</td><td class=muted>" + esc((m.created_at || "").slice(0,10)) + "</td><td>" + act + "</td></tr>";
-}
-let editingId = null;
-async function editMem(id){
-  const m = (memoriesById || {})[id];
-  if (!m) return;
-  const v = prompt("编辑记忆内容：", m.content);
-  if (v === null) return;
-  await rpc("memory.update", { id, content: v }).then(() => boot()).catch((e) => alert(e.message));
-}
-window.editMem = editMem;
-async function delMem(id){
-  if (!confirm("删除这条记忆？")) return;
-  await rpc("memory.delete", { id }).then(() => boot()).catch((e) => alert(e.message));
-}
-window.delMem = delMem;
-let memoriesById = {};
-let activeTab = "memories";
-function switchTab(id){
-  activeTab = id;
-  document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.id === "pane-" + id));
-  document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === id));
-  document.getElementById("tabTitle").textContent = TITLES[id] || id;
-  updateToolbar();
-}
-function updateToolbar(){
-  const tab = TABS.find((t) => t.id === activeTab);
-  const bar = document.getElementById("toolbar");
-  if (!bar) return;
-  bar.innerHTML = "";
-  if (tab && tab.desc) {
-    const d = document.createElement("span");
-    d.textContent = tab.desc;
-    d.className = "tab-desc";
-    bar.appendChild(d);
-  }
-  if (tab && tab.gen) {
-    const btn = document.createElement("button");
-    btn.textContent = "生成";
-    btn.className = "gen-btn";
-    btn.addEventListener("click", () => genByTab(tab));
-    bar.appendChild(btn);
-  }
-  if (tab && tab.id === "skills") {
-    const b1 = document.createElement("button");
-    b1.textContent = "接管opencode技能";
-    b1.className = "gen-btn";
-    b1.addEventListener("click", () => adoptSkills());
-    bar.appendChild(b1);
-    const b2 = document.createElement("button");
-    b2.textContent = "从目录安装";
-    b2.className = "gen-btn";
-    b2.addEventListener("click", () => installSkillDir());
-    bar.appendChild(b2);
-  }
-  if (tab && tab.distill) {
-    const btn = document.createElement("button");
-    btn.textContent = "蒸馏";
-    btn.className = "gen-btn";
-    btn.addEventListener("click", () => distillNow());
-    bar.appendChild(btn);
-  }
-}
-async function editRow(kind, id, current, field){
-  const label = (KIND_EDIT_LABEL[kind] || "编辑内容：");
-  const v = prompt(label, current);
-  if (v === null || v === current) return;
-  try {
-    await rpc("data.update", { kind, id, [field]: v });
-    await boot();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-async function delRow(kind, id, label){
-  if (!confirm("删除" + (label || "这条") + "？")) return;
-  try {
-    await rpc("data.delete", { kind, id });
-    await boot();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-async function openDir(id){
-  try {
-    const res = await rpc("workspace.open", { id });
-    if (!res.ok) alert("无法打开目录");
-  } catch (e) {
-    alert(e.message);
-  }
-}
-function rowAct(kind, id, label, current){
-  const field = KIND_EDIT_FIELD[kind];
-  return '<span class=act><button onclick="editRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(current || "") + "'" + ',' + "'" + (field || "") + "'" + ')">编辑</button><button class=del onclick="delRow(' + "'" + kind + "'" + ',' + "'" + id + "'" + ',' + "'" + esc(label || "") + "'" + ')">删除</button></span>';
-}
-function skillRun(method, name){
-  rpc(method, { name }).then((r) => { if (r.error) alert(r.error); else boot(); }).catch((e) => alert(e.message));
-}
-async function skillInfoBox(name){
-  try {
-    const r = await rpc("skills.info", { name });
-    if (r.error) return alert(r.error);
-    alert("【" + r.name + "】\\n" + (r.description || "") + "\\n\\n状态：" + r.status + "  η=" + r.eta.toFixed(2) + "  试用 " + r.trials + "\\n使用：" + r.usage + "  失败：" + r.fails + "  已优化：" + (r.optimized_at ? "是" : "否") + "\\n\\n路径：" + (r.location || "") + (r.loaded_by_opencode ? "\\n[opencode 当前加载]" : "\\n[opencode 未加载]"));
-  } catch (e) { alert(e.message); }
-}
-function skillRowAct(s){
-  const en = s.status === "disabled" ? '<button onclick="skillRun(' + "'skills.enable'" + ',' + "'" + esc(s.name) + "'" + ')">启动</button>' : '<button class=del onclick="skillRun(' + "'skills.disable'" + ',' + "'" + esc(s.name) + "'" + ')">停止</button>';
-  return '<span class=act>' + en + '<button onclick="skillInfoBox(' + "'" + esc(s.name) + "'" + ')">说明</button><button class=del onclick="delRow(' + "'skills'" + ',' + "'" + esc(s.id) + "'" + ',' + "'" + esc(s.name) + "'" + ')">卸载</button></span>';
-}
-async function adoptSkills(){
-  try {
-    const r = await rpc("skills.adopt", {});
-    alert("已接管技能：" + (r.installed.length ? r.installed.join("、") : "（无新增）") + (r.skipped.length ? "\\n跳过：" + r.skipped.join("、") : ""));
-    await boot();
-  } catch (e) { alert(e.message); }
-}
-async function installSkillDir(){
-  const d = prompt("输入要安装技能的目录（会扫描其中所有 SKILL.md）：", "");
-  if (d === null || !d.trim()) return;
-  try {
-    const r = await rpc("skills.install", { dir: d.trim() });
-    alert("已安装：" + (r.installed.length ? r.installed.join("、") : "（无）") + (r.skipped.length ? "\\n跳过：" + r.skipped.join("、") : ""));
-    await boot();
-  } catch (e) { alert(e.message); }
-}
-async function genByTab(tab){
-  const g = tab.gen;
-  const val = prompt(g.prompt + (g.desc ? "(留空则跳过) " : ""), "");
-  if (val === null || !val.trim()) return;
-  const params = { [g.args[0]]: val.trim() };
-  if (g.desc) {
-    const d = prompt(g.desc, "");
-    if (d !== null && d.trim()) params[g.args[1]] = d.trim();
-  }
-  try {
-    const res = await rpc(g.method, params);
-    alert("已生成：" + (res.name || res.rule || res.goal || res.id || "OK"));
-    await boot();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-async function distillNow(){
-  try {
-    const res = await rpc("session.distill", {});
-    alert("已蒸馏要点 " + res.fact_count + " 条" + (res.summary ? "：" + esc(res.summary).slice(0, 80) : "（无可提取内容）"));
-    await boot();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-async function boot(){
-  // housekeeping before rendering: merge duplicate workspaces, prune done/useless checkpoints
-  try { await rpc("workspace.merge", {}); } catch (e) {}
-  try { await rpc("checkpoints.maintain", {}); } catch (e) {}
-  const [dash, memories, skills, goals, repairs, patterns, daily, workspaces, rules, checkpoints, evolution] = await Promise.all([
-    get("/api/dashboard"), get("/api/memories"), get("/api/skills"), get("/api/goals"), get("/api/repairs"), get("/api/patterns"),
-    rpc("memory.daily", { limit: 14 }), get("/api/workspaces"), get("/api/rules"), get("/api/checkpoints"), get("/api/evolution")
-  ]);
-  memoriesById = {};
-  for (const m of memories) memoriesById[m.uuid || m.id] = m;
-  const st = dash.status;
-  document.getElementById("sub").textContent = "节点 " + st.node_id + " · 时钟 " + st.clock + " · " + (st.home || st.db_path);
-  const counts = dash.counts;
-  document.getElementById("counts").innerHTML = Object.entries(counts).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh(COUNT_ZH, k, k) + "</span></div>").join("");
-  const nav = document.getElementById("nav");
-  nav.innerHTML = TABS.map((t) => {
-    const n = t.key === "daily" ? (daily ? daily.length : 0) : (t.key ? (counts[t.key] ?? 0) : "");
-    return '<button data-tab="' + t.id + '"' + (t.id === activeTab ? ' class=active' : '') + '><span>' + t.label + "</span>" + (t.key ? "<span class=cnt>" + n + "</span>" : "") + "</button>";
-  }).join("");
-  nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => switchTab(b.getAttribute("data-tab"))));
-  updateToolbar();
-  const memBox = document.getElementById("memories");
-  if (!memories.length) memBox.innerHTML = '<div class="empty">暂无记忆</div>';
-  else {
-    let h = "<div class=table-wrap><table><tr><th>强度</th><th>内容</th><th>作用域</th><th>时间</th><th>操作</th></tr>";
-    for (const m of memories) h += memRow(m);
-    memBox.innerHTML = h + "</table></div>";
-  }
-  const dlBox = document.getElementById("daily");
-  dlBox.innerHTML = daily && daily.length ? daily.map((d) => {
-    const stCls = { done: "st-done", pending: "st-pending", info: "st-info" };
-    const statusTxt = { done: "已落实", pending: "待跟进", info: "新信息" };
-    return "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条事项 · 已落实 " + d.done_count + " · 待跟进 " + d.pending_count + "</div>" +
-      (d.review ? "<div class=review>" + esc(d.review) + "</div>" : "") +
-      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span>" + (f.problem ? "问题: " + esc(f.problem) : "") + (f.solution ? " · 解决: " + esc(f.solution) : "") + "</span></li>").join("") + "</ul></div>";
-  }).join("") : '<div class="empty">暂无总结</div>';
-  const skBox = document.getElementById("skills");
-  if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';
-  else {
-    let h = "<div class=table-wrap><table><tr><th>名称</th><th>状态</th><th>η</th><th>试用</th><th>操作</th></tr>";
-    for (const s of skills) h += "<tr><td>" + esc(s.name) + (s.description ? "<div class=muted>" + esc(s.description) + "</div>" : "") + "</td><td>" + statusBadge(s.status, zh(STATUS_ZH, s.status, s.status)) + "</td><td>" + s.eta.toFixed(2) + "</td><td class=muted>" + s.passed + "/" + s.trials + "</td><td>" + skillRowAct(s) + "</td></tr>";
-    skBox.innerHTML = h + "</table></div>";
-  }
-  const goBox = document.getElementById("goals");
-  goBox.innerHTML = goals.length ? "<div class=table-wrap><table><tr><th>目标</th><th>状态</th><th>项目</th><th>操作</th></tr>" + goals.map(g => "<tr><td>" + esc(g.goal) + "</td><td>" + esc(zh(GOAL_ZH, g.status, g.status)) + "</td><td class=muted>" + esc(g.project || "") + "</td><td>" + rowAct("goals", g.id, g.goal, g.goal) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无目标</div>';
-  const rpBox = document.getElementById("repairs");
-  rpBox.innerHTML = repairs.length ? "<div class=table-wrap><table><tr><th>类型</th><th>触发</th><th>草稿</th><th>操作</th></tr>" + repairs.slice(0, 15).map(r => "<tr><td>" + esc(zh(REPAIR_ZH, r.kind, r.kind)) + "</td><td class=muted>" + esc(zh(REPAIR_ZH, r.trigger, r.trigger)) + "</td><td>" + esc(r.draft) + "</td><td>" + rowAct("repairs", r.id, "修复", r.draft) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无</div>';
-  const ptBox = document.getElementById("patterns");
-  ptBox.innerHTML = patterns.length ? "<div class=table-wrap><table><tr><th>签名</th><th>工具</th><th>错误码</th><th>次数</th><th>操作</th></tr>" + patterns.map(p => "<tr><td>" + esc(p.sig) + "</td><td>" + esc(p.tool || "") + "</td><td class=muted>" + esc(p.err_code || "") + "</td><td>" + p.episodes + "</td><td>" + rowAct("patterns", p.id, "模式", p.sig) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无成熟候选</div>';
-  const wsBox = document.getElementById("workspaces");
-  wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>名称</th><th>路径</th><th>访问</th><th>操作</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td><td>" + '<span class=act><button class="open-dir" onclick="openDir(' + "'" + esc(w.id) + "'" + ')">打开目录</button>' + rowAct("workspaces", w.id, w.name, w.name) + "</span></td></tr>").join("") + "</table></div>" : '<div class="empty">暂无工作区</div>';
-  const ruBox = document.getElementById("rules");
-  ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>规则</th><th>域</th><th>范围</th><th>次数</th><th>操作</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:"全局", local:"本地" }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td><td>" + rowAct("rules", r.uuid, "规则", r.rule) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无规则</div>';
-  const cpBox = document.getElementById("checkpoints");
-  cpBox.innerHTML = checkpoints.length ? function(){ var groups={},i; for(i=0;i<checkpoints.length;i++){ var c=checkpoints[i],g=c.goal||"(无目标)"; if(!groups[g]||groups[g].cp<c.cp) groups[g]=c } var entries=[]; for(var k in groups) entries.push(groups[k]); entries.sort(function(a,b){return a.cp>b.cp?-1:1}); return "<div class=table-wrap><table><tr><th>目标</th><th>检查点</th><th>状态</th><th>备注</th><th>操作</th></tr>" + entries.slice(0,20).map(function(c){return "<tr><td class=muted>"+esc(c.goal||"")+"</td><td>"+esc(c.cp)+"</td><td>"+esc(zh({done:"完成",pending:"待办",skipped:"跳过",failed:"失败"},c.status,c.status))+"</td><td class=muted>"+esc(c.notes||"")+"</td><td>"+rowAct("checkpoints",c.uuid,"检查点",c.notes||"")+"</td></tr>"}).join("")+"</table></div>" }() : '<div class="empty">暂无检查点</div>';
-  const evBox = document.getElementById("evolution");
-  evBox.innerHTML = evolution.length ? "<div class=table-wrap><table><tr><th>策略</th><th>状态</th><th>技能</th><th>候选</th><th>操作</th></tr>" + evolution.slice(0, 30).map(e => "<tr><td>" + esc(zh({ harden:"加固", innovate:"创新", repair:"修复", generalize:"泛化" }, e.strategy, e.strategy)) + "</td><td>" + esc(zh({ pending:"待审", applied:"已应用", rejected:"已拒绝" }, e.status, e.status)) + "</td><td class=muted>" + esc(e.skill_name || "") + "</td><td>" + esc(e.candidate) + "</td><td>" + rowAct("evolution", e.uuid, "演进", e.candidate) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">暂无演进候选</div>';
-}
-boot().catch(e => document.body.insertAdjacentHTML("beforeend", "<pre>" + esc(e.stack) + "</pre>"));
-</script>
-</body>
-</html>`

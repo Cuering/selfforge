@@ -138,3 +138,52 @@ test("skillStatus reports cohort counts and graduation readiness", async () => {
   expect(candidate?.n).toBeGreaterThanOrEqual(1)
   expect(st.candidateTrials).toBe(3)
 })
+
+test("skillCreate without body ships full executable Chinese template", async () => {
+  clean()
+  const s = await skills()
+  const created = s.skillCreate("完整模板技能", "用于验证自动生成执行规则")
+  const row = s.skillList().find((x) => x.name === created.name)
+  expect(row?.content).toBeTruthy()
+  expect(row!.content!).toContain("## 目标")
+  expect(row!.content!).toContain("## 执行步骤")
+  expect(row!.content!).toContain("## 硬性规则")
+  expect(row!.content!).toContain("## 验收标准")
+  expect(row!.content!).toContain("用于验证自动生成执行规则")
+})
+
+test("skillList orders active before candidate", async () => {
+  clean()
+  const s = await skills()
+  const d = await db()
+  const a = s.skillCreate("zzz candidate first", "c")
+  const b = s.skillCreate("aaa active later", "a")
+  d.getDb().query("UPDATE skills SET status = 'active', usage_count = 1 WHERE name = ?").run(b.name)
+  d.getDb().query("UPDATE skills SET status = 'candidate', usage_count = 99 WHERE name = ?").run(a.name)
+  const list = s.skillList()
+  const ia = list.findIndex((x) => x.name === b.name)
+  const ic = list.findIndex((x) => x.name === a.name)
+  expect(ia).toBeGreaterThanOrEqual(0)
+  expect(ic).toBeGreaterThanOrEqual(0)
+  expect(ia).toBeLessThan(ic)
+})
+
+test("curator archives skills unused for 90 days (from created_at if never tried)", async () => {
+  clean()
+  const s = await skills()
+  const rev = (await import("../plugin/selfforge/lib/review")) as typeof import("../plugin/selfforge/lib/review")
+  const d = await db()
+  const created = s.skillCreate("old unused skill", "应被淘汰")
+  const old = new Date(Date.now() - 100 * 86400000).toISOString()
+  d.getDb()
+    .query("UPDATE skills SET created_at = ?, last_used_at = NULL, status = 'candidate' WHERE name = ?")
+    .run(old, created.name)
+  const stats = rev.curatorRun()
+  expect(stats.archived).toBeGreaterThanOrEqual(1)
+  const row = d.getDb().query("SELECT status, deleted FROM skills WHERE name = ?").get(created.name) as {
+    status: string
+    deleted: number
+  }
+  expect(row.status).toBe("archived")
+  expect(row.deleted).toBe(1)
+})

@@ -24,58 +24,43 @@ Everything is stored in a single SQLite database at `~/.evolve/unified.db` (or `
 
 ## Install
 
-One command (downloads + installs):
+### One-command (recommended, no manual config needed)
+
+Linux / macOS / WSL (bash):
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Cuering/selfforge/main/install-remote.sh | bash
-```
-
-Manual (from a local clone):
-
-```bash
-git clone https://github.com/Cuering/selfforge.git
-bash selfforge/install.sh
+# or from a local clone:
+bash install.sh
 # restart opencode
 ```
 
-Manual install:
+Windows (PowerShell):
 
-1. Copy the plugin and skill:
-   - `plugin/selfforge.ts` + `plugin/lib/**` → `~/.config/opencode/plugins/`
-   - `skills/selfforge/` → `~/.agents/skills/selfforge/`
-   - `skills/evolve-reviewer/` → `~/.agents/skills/evolve-reviewer/`
-2. Register in `~/.config/opencode/opencode.json`:
-
-```jsonc
-{
-  "plugin": ["./plugins/selfforge.ts"],
-  "instructions": ["~/.evolve/memory.context.md"],
-  "agent": {
-    "evolve-reviewer": {
-      "description": "Reviews past conversations for self-improvement opportunities",
-      "hidden": true,
-      "steps": 20,
-      "prompt": "Load the selfforge skill and follow its review workflow to review the attached conversation for learning opportunities. Take immediate action: record observations, update memory, create or patch skills, track goals.",
-      "permission": {
-        "bash": "allow", "read": "allow", "glob": "allow", "grep": "allow",
-        "write": "allow", "edit": "deny", "webfetch": "deny", "task": "deny",
-        "skill": "allow", "external_directory": "allow"
-      }
-    }
-  }
-}
+```powershell
+git clone https://github.com/Cuering/selfforge.git
+cd selfforge
+powershell -ExecutionPolicy Bypass -File install.ps1
+# restart opencode
 ```
 
-3. Restart opencode. The plugin creates `~/.evolve/unified.db` and `~/.evolve/memory.context.md` on first load.
+The script auto-detects the environment:
 
-> **Desktop (Node/Electron) note:** the desktop app runs on Node and cannot `import` `.ts` files. Build the plugins to `.js` first and point `plugin` at the compiled bundle:
->
-> ```bash
-> cd ~/.config/opencode/plugins
-> bun build.mjs                # emits compiled/selfforge.js
-> ```
->
-> then set `"plugin": ["./plugins/compiled/selfforge.js"]`. The CLI (Bun) can load the `.ts` entry directly.
+- Copies plugin source → `~/.config/opencode/plugins/`
+- Copies selfforge + evolve-reviewer skills → `~/.agents/skills/`
+- If Bun is available, runs `bun build.mjs` to produce `compiled/selfforge.js` (required for desktop Node; the script points the config at .js if built, .ts if not)
+- Writes `opencode.json`/`jsonc`: `plugin`, `instructions` (`~/.evolve/memory.context.md`), `skills.paths` (`~/.evolve/skills`), `evolve-reviewer` agent
+- Verifies file completeness
+
+### Dependencies
+
+| Dependency | Purpose | If missing |
+|------------|---------|------------|
+| opencode | Runtime | Plugin won't load |
+| Bun (optional) | Build .js / CLI | CLI works with .ts; desktop needs Bun installed first |
+| Node / git / bash or PowerShell | Install script & CLI | Can't install |
+
+> Everything else is self-contained: SQLite is built-in, no external services. First load creates `~/.evolve/unified.db` and `~/.evolve/memory.context.md` automatically.
 
 ## Tools
 

@@ -161,7 +161,9 @@ export function memoryAdd(
       ts,
       ts
     )
-  return { id: Number(info.lastInsertRowid), content, tier: computeTier(1), type, importance, status, confidence }
+  const out = { id: Number(info.lastInsertRowid), content, tier: computeTier(1), type, importance, status, confidence }
+  if (status === "confirmed") scheduleContextRefresh()
+  return out
 }
 
 export function memoryList(opts?: {
@@ -210,6 +212,7 @@ export function memoryStrengthen(keyword: string) {
       "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
     ).run(newStrength, computeTier(newStrength), access, nxt.lifecycle, ts, ts, ts, r.id)
   }
+  if (rows.length > 0) scheduleContextRefresh()
   return { matched: rows.length, ids: rows.map((r) => r.id), promoted }
 }
 
@@ -225,6 +228,7 @@ export function strengthenById(id: number) {
   db.query(
     "UPDATE memories SET strength = ?, tier = ?, access_count = ?, lifecycle = ?, updated_at = ?, last_reinforced_at = ?, last_accessed_at = ? WHERE id = ?"
   ).run(newStrength, computeTier(newStrength), access, nxt.lifecycle, ts, ts, ts, id)
+  scheduleContextRefresh()
   return { ok: true, id, strength: newStrength, promoted: nxt.promoted }
 }
 
@@ -248,6 +252,7 @@ export function memoryWeaken(keyword: string) {
       "UPDATE memories SET strength = ?, tier = ?, lifecycle = ?, updated_at = ? WHERE id = ?"
     ).run(newStrength, computeTier(newStrength), lifecycle, ts, r.id)
   }
+  if (rows.length > 0) scheduleContextRefresh()
   return { matched: rows.length, ids: rows.map((r) => r.id), demoted }
 }
 
@@ -260,6 +265,7 @@ export function memoryRemove(keyword: string) {
   for (const r of rows) {
     db.query("UPDATE memories SET archived = 1, deleted = 1, updated_at = ? WHERE id = ?").run(now(), r.id)
   }
+  if (rows.length > 0) scheduleContextRefresh()
   return { archived: rows.length, ids: rows.map((r) => r.id) }
 }
 
@@ -314,7 +320,10 @@ export function memoryUpdateById(
   sets.push("updated_at = ?")
   params.push(now())
   db.query(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`).run(...params, id)
-  return { ok: true, memory: db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory }
+  const memory = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory
+  if (memory && memory.status === "confirmed" && !memory.archived) scheduleContextRefresh()
+  else if (patch.status === "confirmed") scheduleContextRefresh()
+  return { ok: true, memory }
 }
 
 /** Archive(soft-delete) a single memory by id. */
@@ -323,6 +332,7 @@ export function memoryArchiveById(id: number): { ok: boolean; message?: string }
   const r = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
   if (!r) return { ok: false, message: `No memory with id ${id}` }
   db.query("UPDATE memories SET archived = 1, deleted = 1, updated_at = ? WHERE id = ?").run(now(), id)
+  scheduleContextRefresh()
   return { ok: true }
 }
 
@@ -381,6 +391,7 @@ export function memoryConfirm(id: number): { ok: boolean; message: string } {
     now(),
     id
   )
+  scheduleContextRefresh()
   return { ok: true, message: `Memory ${id} confirmed` }
 }
 
@@ -390,6 +401,7 @@ export function memoryReject(id: number): { ok: boolean; message: string } {
   const row = db.query("SELECT * FROM memories WHERE id = ?").get(id) as Memory | undefined
   if (!row) return { ok: false, message: `No memory with id ${id}` }
   db.query("UPDATE memories SET archived = 1, deleted = 1, updated_at = ? WHERE id = ?").run(now(), id)
+  scheduleContextRefresh()
   return { ok: true, message: `Memory ${id} rejected and archived` }
 }
 
@@ -567,7 +579,7 @@ export function memoryAddDedup(
         ts,
         best.id
       )
-    return {
+    const out = {
       merged: true,
       id: best.id,
       strength: newStrength,
@@ -576,6 +588,8 @@ export function memoryAddDedup(
       type: best.type ?? "fact",
       status,
     }
+    if (status === "confirmed") scheduleContextRefresh()
+    return out
   }
 
   return { merged: false, ...memoryAdd(content, opts) }
@@ -809,5 +823,156 @@ export function composeMemoryContext(opts?: { wsScope?: string; limit?: number; 
   }
 
   writeFileSync(CONTEXT_FILE, md)
+  lastComposedAt = now()
+  lastComposedGen = contextGen
   return md
+}
+
+// --- Hot reload / reuse bridge (opencode instructions + system.transform) ---
+//
+// memory.context.md is loaded via opencode `instructions` (often cached per session).
+// Writing the file alone is not enough for the *current* turn; system.transform must
+// also push a live delta. scheduleContextRefresh debounces disk writes after DB changes.
+
+let contextGen = 0
+let lastComposedGen = -1
+let lastComposedAt = ""
+let refreshWsScope: string | undefined
+let refreshSessionId: string | undefined
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+const REFRESH_DEBOUNCE_MS = 400
+
+/** Bump dirty generation and (debounced) rewrite memory.context.md for instructions. */
+export function scheduleContextRefresh(opts?: {
+  wsScope?: string
+  includeSession?: string
+  immediate?: boolean
+}): void {
+  if (opts && "wsScope" in opts) refreshWsScope = opts.wsScope
+  if (opts?.includeSession) refreshSessionId = opts.includeSession
+  contextGen++
+  if (opts?.immediate) {
+    if (refreshTimer) {
+      clearTimeout(refreshTimer)
+      refreshTimer = null
+    }
+    try {
+      composeMemoryContext({
+        wsScope: refreshWsScope,
+        includeSession: refreshSessionId,
+      })
+    } catch {}
+    return
+  }
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    try {
+      composeMemoryContext({
+        wsScope: refreshWsScope,
+        includeSession: refreshSessionId,
+      })
+    } catch {}
+  }, REFRESH_DEBOUNCE_MS)
+  if (typeof refreshTimer === "object" && refreshTimer && "unref" in refreshTimer) {
+    try {
+      ;(refreshTimer as NodeJS.Timeout).unref()
+    } catch {}
+  }
+}
+
+/** Force a disk rewrite now (tests / shutdown). */
+export function refreshMemoryContextNow(opts?: { wsScope?: string; includeSession?: string }): string {
+  if (opts && "wsScope" in opts) refreshWsScope = opts.wsScope
+  if (opts?.includeSession) refreshSessionId = opts.includeSession
+  contextGen++
+  return composeMemoryContext({
+    wsScope: refreshWsScope,
+    includeSession: refreshSessionId,
+  })
+}
+
+export function contextRefreshMeta(): {
+  gen: number
+  composedGen: number
+  dirty: boolean
+  lastComposedAt: string
+} {
+  return {
+    gen: contextGen,
+    composedGen: lastComposedGen,
+    dirty: contextGen !== lastComposedGen,
+    lastComposedAt,
+  }
+}
+
+/**
+ * Compact block for experimental.chat.system.transform / session.compacting.
+ * Carries (1) distilled session state and (2) confirmed memories newer than the
+ * last file compose — so the *current* opencode session reuses writes without
+ * waiting for a process restart or instructions re-read.
+ */
+export function liveMemoryInjection(opts?: {
+  sessionID?: string
+  wsScope?: string
+  /** ISO lower bound; default = lastComposedAt or 30 minutes ago */
+  since?: string
+  limit?: number
+}): string | null {
+  if (opts && "wsScope" in opts && opts.wsScope !== undefined) refreshWsScope = opts.wsScope
+  // Keep the instructions file fresh when something is pending.
+  if (contextGen !== lastComposedGen) {
+    try {
+      composeMemoryContext({
+        wsScope: refreshWsScope,
+        includeSession: opts?.sessionID || refreshSessionId,
+      })
+    } catch {}
+  }
+
+  const parts: string[] = []
+  if (opts?.sessionID) {
+    try {
+      const { renderSessionState } = require("./summary")
+      const state = renderSessionState(opts.sessionID)
+      if (state) parts.push(state.trimEnd())
+    } catch {}
+  }
+
+  const limit = Math.max(1, Math.min(20, opts?.limit ?? 8))
+  let since = opts?.since || lastComposedAt
+  if (!since) {
+    since = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+  }
+  try {
+    const rows = getDb()
+      .query(
+        "SELECT id, content, tier, strength, type, scope, updated_at FROM memories WHERE archived = 0 AND deleted = 0 AND status = 'confirmed' AND updated_at > ? ORDER BY updated_at DESC LIMIT ?"
+      )
+      .all(since, limit) as Array<{
+      id: number
+      content: string
+      tier: string
+      strength: number
+      type: string
+      scope: string | null
+      updated_at: string
+    }>
+    if (rows.length > 0) {
+      const lines = rows.map((m) => {
+        const sc = m.scope ? ` scope:${m.scope}` : ""
+        return `- [#${m.id} ${m.tier}/${m.strength} ${m.type || "fact"}${sc}] ${m.content}`
+      })
+      parts.push(
+        `## Recent Memory Updates\n\n<!-- hot-reload: confirmed writes after last context compose -->\n${lines.join("\n")}`
+      )
+    }
+  } catch {}
+
+  if (parts.length === 0) return null
+  return (
+    `<!-- selfforge live memory -->\n${parts.join("\n\n")}\n\n` +
+    `These entries supplement instructions (~/.evolve/memory.context.md). ` +
+    `Treat them as authoritative for prior decisions in this session; current repo/CI/test facts still win on conflict.`
+  )
 }

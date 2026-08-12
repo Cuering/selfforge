@@ -27,11 +27,11 @@ const OPENCODE_SKILL_DIRS = () => [
 export const skillTools = {
   skill_create: tool({
     description:
-      "Create a new skill from distilled knowledge. Name is auto-slugified. Body appended if empty. Runs deterministic anti-hallucination verification (tool coverage + evidence resonance) and returns the verdict as advisory info.",
+      "创建可复用技能。名称会 slug 化；description 请用中文写清能完成的任务。若未提供 body，自动生成含目标/步骤/硬性规则/验收标准的完整中文执行模板。会跑确定性反幻觉校验（工具覆盖+证据共鸣）。",
     args: {
-      name: tool.schema.string(),
-      description: tool.schema.string(),
-      body: tool.schema.string().optional().describe("Optional SKILL.md body"),
+      name: tool.schema.string().describe("技能名（英文或中文，存盘为 slug）"),
+      description: tool.schema.string().describe("中文说明：何时用、能完成什么任务"),
+      body: tool.schema.string().optional().describe("可选 SKILL.md 正文；空则用完整执行规则模板"),
     },
     async execute(args, ctx) {
       const res = skillCreate(args.name, args.description, args.body)

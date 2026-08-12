@@ -211,6 +211,49 @@ test("composeMemoryContext can fuse a session state block", async () => {
   expect(ctx).toContain("cache builds")
 })
 
+test("hot reload: confirmed memory_add rewrites context and liveMemoryInjection surfaces it", async () => {
+  const m = await mem()
+  const d = await db()
+  d.getDb().query("DELETE FROM memories").run()
+  // Baseline compose so lastComposedAt is set
+  m.composeMemoryContext()
+  const before = m.contextRefreshMeta()
+  expect(before.dirty).toBe(false)
+
+  const marker = `hot-reload unique lesson ${Date.now()}`
+  m.memoryAdd(marker, { status: "confirmed" })
+  // Dirty immediately; debounced rewrite may lag — force now for deterministic assert
+  expect(m.contextRefreshMeta().dirty).toBe(true)
+  const rewritten = m.refreshMemoryContextNow()
+  expect(rewritten).toContain(marker)
+  expect(m.contextRefreshMeta().dirty).toBe(false)
+
+  // Simulate "next turn" live injection after a compose that freezes lastComposedAt
+  // by adding another memory and reading live delta without waiting for file.
+  const marker2 = `live-inject unique lesson ${Date.now()}`
+  m.memoryAdd(marker2, { status: "confirmed" })
+  // Force compose to advance lastComposedAt *before* the new row's updated_at would
+  // be older — instead: compose first, then add, then live inject with since in the past.
+  // liveMemoryInjection uses lastComposedAt as since; after memoryAdd dirty, force compose
+  // then the *previous* marker2 is in the file. For live path: set since to epoch via opts.
+  const live = m.liveMemoryInjection({ since: "1970-01-01T00:00:00.000Z", limit: 20 })
+  expect(live).toBeTruthy()
+  expect(live!).toContain(marker2)
+  expect(live!).toContain("Recent Memory Updates")
+})
+
+test("hot reload: includeSession on schedule attaches session state for live inject", async () => {
+  const m = await mem()
+  const s = await summary()
+  const sid = "sess-hot"
+  s.summarizeSession(sid, [{ role: "user", content: "we prefer bun for plugin tests always" }], 2)
+  m.scheduleContextRefresh({ includeSession: sid, immediate: true })
+  const live = m.liveMemoryInjection({ sessionID: sid })
+  expect(live).toBeTruthy()
+  expect(live!).toContain("Session State")
+  expect(live!).toMatch(/bun|plugin|tests/i)
+})
+
 // --- Feature 5: eval harness ---
 
 test("recall eval benchmark reaches high precision on the fixture set", async () => {

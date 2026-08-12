@@ -118,6 +118,42 @@ export function skillFeedback(name: string, positive: boolean) {
 const FRONTMATTER = (name: string, description: string) =>
   `---\nname: ${name}\ndescription: ${description}\nmetadata:\n  provenance: unified-evolver\n---\n`
 
+/**
+ * Full executable skill body (Chinese). Used when skill_create is called without
+ * a body so the skill can actually drive the described task end-to-end.
+ */
+export function defaultSkillBody(name: string, description: string): string {
+  const title = name || "skill"
+  const goal = (description || "").trim() || "完成与本技能描述一致的任务"
+  return `# ${title}
+
+## 目标
+${goal}
+
+## 何时使用
+- 用户请求或当前任务与上述目标一致时加载本技能。
+- 不要在无关任务上调用；不确定时先用一句话确认是否匹配 description。
+
+## 执行步骤
+1. **理解任务**：用 1–3 条要点复述用户目标与验收标准；缺信息先问清再动手。
+2. **检索上下文**：用 memory_search / 相关代码搜索，避免重复已有结论；遵守已注入记忆与 AGENTS 规则。
+3. **按目标实施**：只做 description 范围内的改动；优先改现有文件，遵循项目惯例；不引入未声明的依赖。
+4. **验证**：运行与本任务相关的测试/构建/类型检查或手工验收步骤；失败则修复后重跑。
+5. **交付**：用中文简要说明改了什么、如何验证、剩余风险；需要持久化的教训再 memory_add / skill_patch。
+
+## 硬性规则
+- 不编造未验证的工具能力或文件路径。
+- 不提交密钥；不自动 git commit/push，除非用户明确要求。
+- 改配置/插件后说明是否需要重启才能生效。
+- 零 LLM 约束的环境（如 selfforge 插件内）不得假设可直接调用模型 API。
+
+## 验收标准
+- 用户描述的任务已完成，或明确写出阻塞原因与下一步。
+- 有可复查的验证结果（命令输出、页面行为或测试通过）。
+- 若沉淀为技能补丁，body 中步骤仍可独立复现。
+`
+}
+
 export function slugify(s: string): string {
   return s
     .toLowerCase()
@@ -131,6 +167,14 @@ export function skillPath(name: string): string {
   return join(SKILLS_DIR, name, "SKILL.md")
 }
 
+/** Ensure the description contains Chinese; if not, wrap with a Chinese note. */
+function ensureChineseDesc(desc: string, name: string): string {
+  if (/[\u4e00-\u9fff]/.test(desc)) return desc
+  // Description is English/empty — wrap so the UI always shows Chinese.
+  const clean = desc.trim() || `完成${name}相关任务`
+  return `${clean} | 中文说明：${clean}`
+}
+
 export function skillCreate(name: string, description: string, body = "") {
   const db = getDb()
   const slug = slugify(name)
@@ -138,12 +182,14 @@ export function skillCreate(name: string, description: string, body = "") {
   if (existing) return { error: `Skill "${slug}" already exists`, id: (existing as Skill).id }
   const ts = now()
   const st = stamp()
-  const content = FRONTMATTER(slug, description) + (body || `# ${slug}\n\n${description}\n`)
+  const desc = ensureChineseDesc(description, slug)
+  const fullBody = (body && body.trim()) || defaultSkillBody(slug, desc)
+  const content = FRONTMATTER(slug, desc) + fullBody
   const info = db
     .query(
       "INSERT INTO skills (uuid, origin, name, description, content, status, usage_count, fail_count, eta, trials_attempted, trials_passed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'candidate', 0, 0, 0.5, 0, 0, ?, ?)"
     )
-    .run(st.uuid, st.origin, slug, description, content, ts, ts)
+    .run(st.uuid, st.origin, slug, desc, content, ts, ts)
   const dir = join(SKILLS_DIR, slug)
   mkdirSync(dir, { recursive: true })
   writeFileSync(skillPath(slug), content)
@@ -168,11 +214,21 @@ export function skillPatch(name: string, section: string, content: string) {
   } else {
     newContent = base + `\n## ${section}\n\n${content}\n`
   }
-  db.query("UPDATE skills SET content = ?, updated_at = ? WHERE id = ?").run(
-    newContent,
-    now(),
-    skill.id
-  )
+  if (section === "description") {
+    // Dual-write: dashboard/skills.list read the description COLUMN, not only content frontmatter.
+    db.query("UPDATE skills SET description = ?, content = ?, updated_at = ? WHERE id = ?").run(
+      content,
+      newContent,
+      now(),
+      skill.id
+    )
+  } else {
+    db.query("UPDATE skills SET content = ?, updated_at = ? WHERE id = ?").run(
+      newContent,
+      now(),
+      skill.id
+    )
+  }
   writeFileSync(skillPath(name), newContent)
   return { patched: true, name, section }
 }
@@ -185,7 +241,8 @@ export function skillList(opts?: { status?: string; includeDeleted?: boolean }):
     params.push(opts.status)
   }
   if (!opts?.includeDeleted) where.push("deleted = 0")
-  const sql = `SELECT * FROM skills ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY usage_count DESC, updated_at DESC`
+  // Active first, then candidate, then others; within group by usage then eta.
+  const sql = `SELECT * FROM skills ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 WHEN 'stale' THEN 2 WHEN 'disabled' THEN 3 ELSE 4 END, usage_count DESC, eta DESC, updated_at DESC`
   return getDb().query(sql).all(...params) as Skill[]
 }
 

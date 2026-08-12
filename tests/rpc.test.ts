@@ -171,17 +171,29 @@ test("memory.delete archives a memory by id/uuid", async () => {
   expect(after).toBeUndefined()
 })
 
-test("memory.daily aggregates user directives by day", async () => {
+test("memory.daily aggregates user directives by day (assistant final reply)", async () => {
   const dbm = (await import("../plugin/selfforge/lib/db")) as typeof import("../plugin/selfforge/lib/db")
+  const ts = new Date().toISOString()
   dbm.getDb()
     .query("INSERT INTO session_messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)")
-    .run("sess-a", "we prefer node:sqlite for the desktop plugin", new Date().toISOString())
+    .run("sess-a", "we prefer node:sqlite for the desktop plugin", ts)
+  dbm.getDb()
+    .query("INSERT INTO session_messages (session_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)")
+    .run(
+      "sess-a",
+      "已改为在 desktop 插件中使用 node:sqlite；步骤：1) 改 db.ts 适配 2) bun test 验证。",
+      ts
+    )
   const r = await call("memory.daily", { limit: 7 })
   expect(r.result.length).toBeGreaterThan(0)
   expect(r.result[0].items.length).toBeGreaterThan(0)
-  expect(r.result[0].items.some((f: any) => f.problem.includes("node:sqlite"))).toBe(true)
+  expect(r.result[0].items.some((f: any) => f.text && f.text.includes("node:sqlite"))).toBe(true)
   expect(r.result[0].review.length).toBeGreaterThan(0)
   expect(typeof r.result[0].done_count).toBe("number")
+  const hit = r.result[0].items.find((f: any) => f.text && f.text.includes("node:sqlite"))
+  expect(hit).toBeTruthy()
+  expect(typeof hit.kind).toBe("string")
+  expect(typeof hit.status).toBe("string")
 })
 
 // Phase 6.7: generic data.edit/delete across the dashboard tables.
@@ -282,4 +294,41 @@ test("checkpoints.maintain returns remaining counts", async () => {
   expect(r.result).toBeTruthy()
   expect(typeof r.result.removed).toBe("number")
   expect(typeof r.result.remaining_active).toBe("number")
+})
+
+test("dashboard HTML is served and client script is syntactically valid", async () => {
+  const res = await fetch(`http://127.0.0.1:${port}/`)
+  expect(res.status).toBe(200)
+  const html = await res.text()
+  expect(html).toContain("selfforge")
+  expect(html).toContain("exportDaily")
+  expect(html).toContain("errBtn")
+  // Regression: template-literal \n must stay as two chars, not real newlines inside JS strings
+  expect(html).toMatch(/let txt = "# selfforge[^"]*\\n\\n"/)
+  const m = html.match(/<script>([\s\S]*)<\/script>/)
+  expect(m).toBeTruthy()
+  // new Function parses as script body — throws on syntax error
+  expect(() => new Function(m![1])).not.toThrow()
+})
+
+test("diagnostics.report + list + clear round-trip", async () => {
+  const rep = await call("diagnostics.report", {
+    level: "error",
+    source: "test",
+    message: "synthetic dashboard error",
+    stack: "Error: synthetic\n    at test",
+  })
+  expect(rep.result.ok).toBe(true)
+  expect(rep.result.id).toBeGreaterThan(0)
+  const list = await call("diagnostics.list", { limit: 10 })
+  expect(list.result.total).toBeGreaterThanOrEqual(1)
+  expect(list.result.errors).toBeGreaterThanOrEqual(1)
+  expect(list.result.entries.some((e: any) => e.message === "synthetic dashboard error")).toBe(true)
+  const api = await fetch(`http://127.0.0.1:${port}/api/errors`)
+  const body = await api.json()
+  expect(body.entries.some((e: any) => e.message === "synthetic dashboard error")).toBe(true)
+  const cleared = await call("diagnostics.clear", {})
+  expect(cleared.result.cleared).toBeGreaterThanOrEqual(1)
+  const after = await call("diagnostics.list", {})
+  expect(after.result.total).toBe(0)
 })

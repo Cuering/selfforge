@@ -24,58 +24,43 @@ Selfforge从对话中学习，跟踪目标，管理持久记忆，提炼并优�
 
 ## 安装
 
-一行命令（下载并安装）：
+### 一行命令（推荐）
+
+Linux / macOS / WSL（bash）：
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Cuering/selfforge/main/install-remote.sh | bash
-```
-
-从本地克隆手动安装：
-
-```bash
-git clone https://github.com/Cuering/selfforge.git
-bash selfforge/install.sh
+# 或从本地克隆后：
+bash install.sh
 # 重启 opencode
 ```
 
-手动安装：
+Windows（PowerShell）：
 
-1. 复制插件与技能：
-   - `plugin/selfforge.ts`+`plugin/lib/**`→`~/.config/opencode/plugins/`
-   - `skills/selfforge/`→`~/.agents/skills/selfforge/`
-   - `skills/evolve-reviewer/`→`~/.agents/skills/evolve-reviewer/`
-2. 在`~/.config/opencode/opencode.json`中注册：
-
-```jsonc
-{
-  "plugin": ["./plugins/selfforge.ts"],
-  "instructions": ["~/.evolve/memory.context.md"],
-  "agent": {
-    "evolve-reviewer": {
-      "description": "Reviews past conversations for self-improvement opportunities",
-      "hidden": true,
-      "steps": 20,
-      "prompt": "Load the selfforge skill and follow its review workflow to review the attached conversation for learning opportunities. Take immediate action: record observations, update memory, create or patch skills, track goals.",
-      "permission": {
-        "bash": "allow", "read": "allow", "glob": "allow", "grep": "allow",
-        "write": "allow", "edit": "deny", "webfetch": "deny", "task": "deny",
-        "skill": "allow", "external_directory": "allow"
-      }
-    }
-  }
-}
+```powershell
+git clone https://github.com/Cuering/selfforge.git
+cd selfforge
+powershell -ExecutionPolicy Bypass -File install.ps1
+# 重启 opencode
 ```
 
-3. 重启opencode。首次加载时插件会创建`~/.evolve/unified.db`与`~/.evolve/memory.context.md`。
+脚本会自动完成（无需手动改配置）：
 
-> **桌面版（Node/Electron）说明：**桌面版基于Node，无法`import` `.ts`文件。需先把插件编译成`.js`并把`plugin`指向编译产物：
->
-> ```bash
-> cd ~/.config/opencode/plugins
-> bun build.mjs                # 输出 compiled/selfforge.js
-> ```
->
-> 然后把`"plugin"`改为`["./plugins/compiled/selfforge.js"]`。CLI（Bun）可直接加载`.ts`入口。
+- 复制插件源码到 `~/.config/opencode/plugins/`
+- 复制 selfforge / evolve-reviewer 两个技能到 `~/.agents/skills/`
+- 若装了 Bun，自动 `bun build.mjs` 编译出 `compiled/selfforge.js`（桌面版 Node 需要；已装则配置指向 .js，否则指向 .ts）
+- 自动写入 `opencode.json`/`jsonc`：`plugin`、`instructions`（`~/.evolve/memory.context.md`）、`skills.paths`（`~/.evolve/skills`）、`evolve-reviewer` agent
+- 校验文件齐全度
+
+### 依赖
+
+| 依赖 | 用途 | 无它会怎样 |
+|------|------|-----------|
+| opencode | 运行时 | 插件无法加载 |
+| Bun（可选） | 编译 .js / 跑 CLI | CLI 可用 .ts；桌面版需先装 Bun 编译 |
+| Node / git / bash 或 PowerShell | 跑安装脚本与 CLI | 无法安装 |
+
+> 其余全部自包含：SQLite 内置，无外部服务。首次加载会自动创建 `~/.evolve/unified.db` 与 `~/.evolve/memory.context.md`。
 
 ## 工具
 
