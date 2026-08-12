@@ -890,8 +890,8 @@ const DASHBOARD_HTML = `<!doctype html>
   .daycard .meta { color:var(--dim); font-size:11px; margin-bottom:6px; }
   .daycard ul { margin:0; padding-left:0; list-style:none; }
   .daycard li { display:flex; align-items:flex-start; gap:6px; padding:2px 0; }
-  .daycard .kind { flex:none; min-width:70px; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:4px; padding:0 4px; text-align:center; margin-top:1px; }
-  .daycard .st-done { color:#2e7d32; } .daycard .st-pending { color:#c77700; } .daycard .st-info { color:var(--dim); }
+  .daycard .kind { flex:none; min-width:70px; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:4px; padding:0 4px; text-align:center; margin-top:1px; white-space:nowrap; }
+  .daycard .st-done { color:#2e7d32; white-space:nowrap; } .daycard .st-pending { color:#c77700; white-space:nowrap; } .daycard .st-info { color:var(--dim); white-space:nowrap; }
   .daycard .review { margin:4px 0 8px; padding:6px 8px; background:rgba(127,127,127,.08); border-radius:6px; line-height:1.5; color:var(--strong); }
 </style>
 </head>
@@ -1161,7 +1161,7 @@ async function boot(){
     const statusTxt = { done: "已落实", pending: "待跟进", info: "新信息" };
     return "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " 个会话 · " + d.fact_count + " 条事项 · 已落实 " + d.done_count + " · 待跟进 " + d.pending_count + "</div>" +
       (d.review ? "<div class=review>" + esc(d.review) + "</div>" : "") +
-      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span><b>问题:</b> " + esc(f.problem) + (f.solution ? "<br><b>解决:</b> " + esc(f.solution) : "") + "</span></li>").join("") + "</ul></div>";
+      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span>" + (f.problem ? "问题: " + esc(f.problem) : "") + (f.solution ? " · 解决: " + esc(f.solution) : "") + "</span></li>").join("") + "</ul></div>";
   }).join("") : '<div class="empty">暂无总结</div>';
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">暂无技能</div>';

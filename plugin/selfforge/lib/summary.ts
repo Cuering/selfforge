@@ -70,13 +70,21 @@ function dedupeFacts(facts: string[]): string[] {
 /** Extract a short solution sentence from an assistant reply. */
 function extractSolution(text: string): string {
   if (!text) return ""
-  for (const s of sentenceSplit(text)) {
+  // Skip acknowledgment/handover phrases that carry no solution content.
+  const SKIP = /^用户说|^让我|^请先|^好的|^明白|^收到|^正在|^需要确认|^让我检查|^我先|^我来|^您|^好[的吧]|^可以|^没问题|^了解|^这个|^现在|^首先|^试试|^看看|^确认/i
+  // Action/solution signal keywords.
+  const ACTION = /已修复|已修改|已改为|已完成|已添加|已删除|已更新|已创建|已生成|已解决|改成|改为|使用|调用|执行|运行|添加|删除|更新|创建|生成|修改|替换|移动|复制|安装|配置|启用|禁用|重启|启动|停止|fixed|changed|updated|created|added|removed|implemented|replaced|moved|copied|installed|configured|enabled|disabled|restarted|started|stopped|renamed|merged|pushed|committed|deployed|built|ran|executed|set\s+up|switched|migrated|upgraded|downgraded|patched|refactored|optimized|improved|repaired|resolved/i
+  const sentences = sentenceSplit(text)
+  let fallback = ""
+  for (const s of sentences) {
     const t = s.trim()
     if (t.length < 8 || t.length > 200) continue
     if (isTrivial(t)) continue
-    return truncate(t, 140)
+    if (SKIP.test(t)) continue
+    if (!fallback) fallback = t
+    if (ACTION.test(t)) return truncate(t, 140)
   }
-  return ""
+  return fallback ? truncate(fallback, 140) : ""
 }
 
 /** Cap summary output so injected state is bounded (Metis fixed-size state). */
