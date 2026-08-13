@@ -358,6 +358,17 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
         if (ga) advisories.push(`## Active Goals\n${ga}`)
         const ea = evolutionAdvisory()
         if (ea) advisories.push(`## Evolution Candidates\n${ea}`)
+        // Rule hot-escalation: promote newly high-scoring rules to AGENTS.md and
+        // surface them this turn so the model applies them without waiting for
+        // the 1-hour idle maintenance or an opencode restart.
+        try {
+          const { autoEscalateRules } = require("./selfforge/lib/rules")
+          const escalated = autoEscalateRules()
+          if (escalated.length > 0) {
+            const lines = escalated.map((e) => `- ${e.rule}`).join("\n")
+            advisories.push(`## Behavioral Rules (hot-escalated this turn)\n${lines}`)
+          }
+        } catch {}
         if (advisories.length > 0) {
           output.system.push(
             `\n\n<!-- selfforge advisory -->\n${advisories.join("\n\n")}\n\nThese are auto-generated signals. Context they describe is authoritative for this session's prior decisions; act on evolution candidates only when relevant. Most sessions need no action.`
