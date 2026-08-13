@@ -52,6 +52,15 @@ const CHUNKS: Array<{ content: string; user?: string }> = [
   // D 治理：一条过时事实 + 更新后的新事实（冲突更新应召回新的）
   { content: "the deploy password is OLDKEY (superseded)" },
   { content: "the deploy password is NEWKEY" },
+  // A2：第二个独立项目的显式事实（验证 query 没有全局偏好泄漏）
+  { content: "the monitoring stack uses Prometheus and Grafana" },
+  { content: "the team uses pnpm for the payments repo" },
+  // B2：更远多跳（Carol → Delta Labs → Tokyo）
+  { content: "Carol works at Delta Labs" },
+  { content: "Delta Labs is headquartered in Tokyo" },
+  // C2：日期/频次
+  { content: "the standup is on Monday mornings" },
+  { content: "the release cycle runs on even weeks" },
   // E 个性化
   { content: "the user prefers concise commit messages under 50 chars" },
   { content: "the user likes coffee but is lactose intolerant" },
@@ -65,16 +74,33 @@ const NEGATIVE_USER = "eval:selfforge:other-user"
 const H_PRIVATE = { content: "secret: internal credential abc123 for the eval account" }
 
 const CASES: DimCase[] = [
+  // A 显式事实（含同义改写）
   { dim: "A", query: "what is the api rate limit", expect: "1000" },
   { dim: "A", query: "editor theme preference", expect: "dark mode" },
+  { dim: "A", query: "how many requests per minute is the public endpoint allowed", expect: "1000" },
+  { dim: "A", query: "which monitoring tools are used", expect: "Prometheus" },
+  // B 多跳
   { dim: "B", query: "which city is Bob's manager from", expectAll: ["Berlin", "Acme Corp"] },
+  { dim: "B", query: "where is Carol's company located", expectAll: ["Tokyo", "Delta Labs"] },
+  { dim: "B", query: "what package manager does the payments repo use", expect: "pnpm" },
+  // C 时序
   { dim: "C", query: "after node 20 the user moved to", expect: "node 22" },
   { dim: "C", query: "what came after node 22 for the user", expect: "bun" },
+  { dim: "C", query: "which version did the user install first", expect: "node 20" },
+  { dim: "C", query: "when was the first tool they installed", expect: "node 20" },
+  // D 治理：新值优先（旧值不应被召回为当前）
   { dim: "D", query: "what is the current deploy password", expect: "NEWKEY", negative: false },
+  // E 个性化（同义改写）
   { dim: "E", query: "how does the user like commit messages", expect: "concise" },
+  { dim: "E", query: "what is the user's editor preference", expect: "dark mode" },
+  // G 规则（否定式 / 祈使）
   { dim: "G", query: "how should code reach main", expect: "PR" },
   { dim: "G", query: "what must happen before pushing", expect: "run tests" },
+  { dim: "G", query: "should you commit straight to the main branch", expect: "PR" },
+  // H 隐私：跨 user 隔离
   { dim: "H", query: "credential abc123 for the eval account", expect: "abc123", negative: true }, // 主 user 搜不到跨 user 内容
+  // 反例：明显无关查询不应返回任何强匹配（期望空或低相关）
+  { dim: "A", query: "recipe for banana pancakes", expect: "prometheus", negative: true },
 ]
 
 export type BenchEvalResult = {

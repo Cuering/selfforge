@@ -30,6 +30,9 @@ export function extractEntities(content: string): Array<{ name: string; type: st
   if (city) add(city[1], "place")
   const org = content.match(/\b([A-Z][a-zA-Z]+)\s+works\s+at\s+([A-Za-z0-9][A-Za-z0-9 ]{1,40})\b/i)
   if (org) add(org[2], "org")
+  // 技术栈小写专名（工具/包管理器/技术名）也作为实体，支撑 "uses X for Y" 关联
+  const tech = content.match(/\b(?:uses|use|using|prefers|stack\s+uses)\s+(?:the\s+)?([a-z][a-z0-9]+(?:\s+[a-z0-9]+)?)/i)
+  if (tech) add(tech[1], "tech")
   return out
 }
 
@@ -42,6 +45,9 @@ export function extractRelations(content: string): Array<{ sub: string; out: str
   if (hq) out.push({ sub: hq[1], out: "located_in", obj: hq[2] })
   const mgr = content.match(/\b([A-Z][a-zA-Z]+)\s+is\s+([A-Z][a-zA-Z]+)'s\s+manager\b/i)
   if (mgr) out.push({ sub: mgr[1], out: "managed_by", obj: mgr[2] })
+  // uses X for Y：Y（主题域）与 X（技术）的关联
+  const uses = content.match(/\b(?:uses|use|using|prefers)\s+([a-z][a-z0-9]+(?:\s+[a-z0-9]+)?)\s+(?:for|in|on)\s+the\s+([a-z][a-z0-9 ]+)\b/i)
+  if (uses) out.push({ sub: uses[2], out: "uses_tech", obj: uses[1] })
   return out
 }
 
@@ -70,9 +76,8 @@ export function ingestChunk(input: {
   if (!content || !user_id) return { memoryId: 0, entities: 0, relations: 0 }
 
   const ts = input.memory_ts ?? Date.now()
-  const seq =
-    input.seq ??
-    Number((db.query("SELECT COUNT(*) AS n FROM bench_timeline WHERE user_id = ?").get(user_id) as { n: number }).n) + 1
+  const maxSeq = db.query("SELECT MAX(seq) AS m FROM bench_timeline WHERE user_id = ? AND deleted = 0").get(user_id) as { m: number | null }
+  const seq = input.seq ?? Number(maxSeq?.m ?? 0) + 1
 
   const mem = db
     .query(

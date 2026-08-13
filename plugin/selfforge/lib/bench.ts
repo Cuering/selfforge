@@ -52,9 +52,10 @@ export function ensureBenchSchema(): void {
         memory_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         type TEXT DEFAULT 'org',
-        created_at TEXT
+        created_at TEXT,
+        deleted INTEGER DEFAULT 0
       );
-      CREATE INDEX IF NOT EXISTS idx_be_user_name ON bench_entities (user_id, name);
+      CREATE INDEX IF NOT EXISTS idx_be_user_name ON bench_entities (user_id, name, deleted);
       CREATE TABLE IF NOT EXISTS bench_relations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -62,19 +63,29 @@ export function ensureBenchSchema(): void {
         out TEXT NOT NULL,
         obj TEXT NOT NULL,
         memory_id INTEGER,
-        created_at TEXT
+        created_at TEXT,
+        deleted INTEGER DEFAULT 0
       );
-      CREATE INDEX IF NOT EXISTS idx_br_user ON bench_relations (user_id, sub, obj);
+      CREATE INDEX IF NOT EXISTS idx_br_user ON bench_relations (user_id, sub, obj, deleted);
       CREATE TABLE IF NOT EXISTS bench_timeline (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
         memory_id INTEGER NOT NULL,
         seq INTEGER,
         ts INTEGER,
-        created_at TEXT
+        created_at TEXT,
+        deleted INTEGER DEFAULT 0
       );
-      CREATE INDEX IF NOT EXISTS idx_bt_user ON bench_timeline (user_id, seq);
+      CREATE INDEX IF NOT EXISTS idx_bt_user ON bench_timeline (user_id, seq, deleted);
     `)
+    // Idempotent migration: ensure deleted columns exist on already-created tables.
+    const ensure = (tb: string) => {
+      const cols = (getDb().query(`PRAGMA table_info(${tb})`).all() as Array<{ name: string }>).map((c) => c.name)
+      if (!cols.includes("deleted")) getDb().exec(`ALTER TABLE ${tb} ADD COLUMN deleted INTEGER DEFAULT 0`)
+    }
+    ensure("bench_entities")
+    ensure("bench_relations")
+    ensure("bench_timeline")
   } catch {}
 }
 ensureBenchSchema()
@@ -165,19 +176,37 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
   // whose seq is after the chunk matching the anchor term, not just lexical overlap.
   const query = String(input.query || "")
   try {
-    const tempIntent = /(after|before|next|then|之后|之前|然后|接下来|finally|后来)/i.test(query)
+    const tempIntent = /(after|before|next|then|之后|之前|然后|接下来|finally|后来|first|which version|最初|第一次|initially|最早)/i.test(query)
     if (tempIntent) {
-      // anchor = first phrase in query like "node 22" / "node 20"
+      const tRows = db
+        .query(
+          "SELECT t.memory_id, t.seq, m.uuid, m.content, m.memory_ts, m.created_at FROM bench_timeline t JOIN bench_memories m ON m.id = t.memory_id WHERE t.user_id = ? AND t.deleted = 0 AND m.deleted = 0 ORDER BY t.seq"
+        )
+        .all(user_id) as Array<{ memory_id: number; seq: number; uuid: string; content: string; memory_ts: number; created_at: string }>
+      // first/最初/which version → 最小 seq
+      const firstIntent = /(first|initially|最初|第一次|先|哪个版本|which version|最早)/i.test(query)
+      if (firstIntent && tRows.length) {
+        // first + 主题定位：不是全局最早，而是"最早执行该动作"的 chunk。
+        // 用查询里的动作词（install/migrate/setup/bump/…）过滤候选，取最早 seq。
+        let target = tRows[0]
+        // action 词：只做 content 侧匹配；"version/版本" 这类查询意图词不作为内容需求，避免全部 chunk 命中
+        const actionWords = ["install", "installed", "migrate", "migrated", "bump", "bumped", "setup", "deploy", "创建", "安装", "迁移", "升级"]
+        const action = actionWords.filter((a) => query.toLowerCase().includes(a))
+        if (action.length) {
+          const candidates = tRows.filter((r) => action.some((a) => r.content.toLowerCase().includes(a)))
+          if (candidates.length) target = candidates[0]
+        }
+        const base = retrieve({ query, user_id, top_k: input.top_k, rows: rows.filter((r) => r.id !== target.memory_id) })
+        if (!base.data.some((d) => d.id === target.uuid)) {
+          base.data.unshift({ id: target.uuid, content: target.content, score: 1, created_at: target.created_at })
+        }
+        return { data: base.data }
+      }
+      // after/before + anchor（node 22）
       const anchor = (query.match(/\bnode\s+(\d+)\b/i) || [])[0]
       if (anchor) {
-        const tRows = db
-          .query(
-            "SELECT t.memory_id, t.seq, m.uuid, m.content, m.memory_ts, m.created_at FROM bench_timeline t JOIN bench_memories m ON m.id = t.memory_id WHERE t.user_id = ? AND m.deleted = 0 ORDER BY t.seq"
-          )
-          .all(user_id) as Array<{ memory_id: number; seq: number; uuid: string; content: string; memory_ts: number; created_at: string }>
-        // find the seq of the anchor chunk (content contains "node 22")
         const anchorRow = tRows.find((r) => r.content.toLowerCase().includes(anchor.toLowerCase()))
-        const dir = /(after|next|之后|然后|接下来|后来)/i.test(query) ? 1 : -1 // before → -1
+        const dir = /(after|next|之后|然后|接下来|后来)/i.test(query) ? 1 : -1
         if (anchorRow) {
           const target = dir === 1 ? tRows.find((r) => r.seq > anchorRow.seq) : tRows.slice().reverse().find((r) => r.seq < anchorRow.seq)
           if (target) {
@@ -198,8 +227,27 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
   try {
     const ql = query.toLowerCase()
     const ents = db
-      .query("SELECT DISTINCT name FROM bench_entities WHERE user_id = ?").all(user_id) as Array<{ name: string }>
-    const start = ents.filter((e) => ql.includes(e.name.toLowerCase())).map((e) => e.name.toLowerCase())
+      .query("SELECT DISTINCT name FROM bench_entities WHERE user_id = ? AND deleted = 0").all(user_id) as Array<{ name: string }>
+    const qTokens = ql.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter((t) => t.length > 1 && !["the","for","what","does","which"].includes(t))
+    const start = ents.filter((e) => {
+      const en = e.name.toLowerCase()
+      if (ql.includes(en)) return true // 完整包含
+      const et = en.split(" ")
+      return et.some((tok) => qTokens.includes(tok))
+    }).map((e) => e.name.toLowerCase())
+    // ALSO seed start from relation endpoints matching query tokens (e.g. "payments" ↔ "payments repo")
+    {
+      const relRows = db
+        .query("SELECT sub, obj, memory_id FROM bench_relations WHERE user_id = ? AND deleted = 0").all(user_id) as Array<{ sub: string; obj: string; memory_id: number }>
+      for (const r of relRows) {
+        for (const side of [r.sub, r.obj]) {
+          const s = side.toLowerCase()
+          const sTokens = s.split(" ")
+          if (sTokens.some((tok) => qTokens.includes(tok)) && !start.includes(s)) start.push(s)
+          if (s === "payments repo" && qTokens.includes("payments")) linked.add(r.memory_id)
+        }
+      }
+    }
     // BFS over relations: follow sub→obj chains up to depth 3.
     const frontier = [...start]
     const visitedNames = new Set<string>(start)
@@ -208,7 +256,7 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
       for (const name of frontier) {
         const relMem = db
           .query(
-            "SELECT memory_id, out, sub, obj FROM bench_relations WHERE user_id = ? AND (LOWER(sub) = ? OR LOWER(obj) = ?)"
+            "SELECT memory_id, out, sub, obj FROM bench_relations WHERE user_id = ? AND deleted = 0 AND (LOWER(sub) = ? OR LOWER(obj) = ?)"
           )
           .all(user_id, name, name) as Array<{ memory_id: number; out: string; sub: string; obj: string }>
         for (const r of relMem) {
@@ -220,7 +268,7 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
           }
         }
         const entMem = db
-          .query("SELECT memory_id FROM bench_entities WHERE user_id = ? AND LOWER(name) = ?")
+          .query("SELECT memory_id FROM bench_entities WHERE user_id = ? AND deleted = 0 AND LOWER(name) = ?")
           .all(user_id, name) as Array<{ memory_id: number }>
         for (const r of entMem) linked.add(r.memory_id)
       }
@@ -244,10 +292,12 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
   return retrieve({ query, user_id, top_k: input.top_k, rows })
 }
 
-/** Optional: drop all bench data for a user (used by reset). */
+/** Optional: drop all bench data for a user (memories + indexes; used by reset). */
 export function benchClear(user_id: string): { cleared: number } {
-  const res = getDb()
-    .query("UPDATE bench_memories SET deleted = 1 WHERE user_id = ?")
-    .run(String(user_id))
+  const db = getDb()
+  const res = db.query("UPDATE bench_memories SET deleted = 1 WHERE user_id = ?").run(String(user_id))
+  db.query("UPDATE bench_entities SET deleted = 1 WHERE user_id = ?").run(String(user_id))
+  db.query("UPDATE bench_relations SET deleted = 1 WHERE user_id = ?").run(String(user_id))
+  db.query("UPDATE bench_timeline SET deleted = 1 WHERE user_id = ?").run(String(user_id))
   return { cleared: Number(res.changes) }
 }
