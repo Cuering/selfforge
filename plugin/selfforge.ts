@@ -381,10 +381,22 @@ let lastGoalReviewAt = 0
 
     "tool.execute.after": async (input: any) => {
       try {
-        // Log every tool call
+        // Log every tool call — but map selfforge data tools to their business type
+        // (memory/skill/rule/goal/…) so the dashboard call-log shows concrete items
+        // instead of a generic "tool" bucket.
         if (input.tool) {
-          const detail = input.args ? JSON.stringify(input.args).slice(0, 200) : ""
-          recordCall("tool", String(input.tool), detail)
+          const detail = input.args ? JSON.stringify(input.args).slice(0, 300) : ""
+          const t = String(input.tool)
+          let type = "tool"
+          if (/^(memory|recall)_/.test(t)) type = "memory"
+          else if (/^skill/.test(t)) type = "skill"
+          else if (/^rule/.test(t)) type = "rule"
+          else if (/^goal/.test(t)) type = "goal"
+          else if (/^evolution/.test(t)) type = "evolution"
+          else if (/^pattern/.test(t)) type = "pattern"
+          else if (/^repair/.test(t)) type = "repair"
+          else if (/^curator|^session|^transfer|^team|^workspace/.test(t)) type = String(t.split("_")[0])
+          recordCall(type, t, detail)
         }
         if (input.tool === "skill" && input.args?.name) {
           recordSkillUse(String(input.args.name))

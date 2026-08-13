@@ -546,13 +546,33 @@ async function boot(){
         }
         h += "</ul></div>";
       }
-      // Recent calls with ID
-      if (recent.length > 0) {
+      // Recent calls with ID — only data-type accesses (memory/skill/rule/goal/…),
+      // exclude tool internals. Show the concrete item (detail JSON) too.
+      const DATA_TYPES = ["memory","skill","rule","goal","checkpoint","evolution","repair","pattern","workspace","transfer","team","daily","session"];
+      // Prefer calls with real detail (specific item/query), drop pure "list" noise.
+      const hasDetail = (r) => {
+        if (!r.detail) return false;
+        const d = r.detail.trim();
+        return d && d !== "list" && d !== "[]" && d !== "{}" && d !== '""';
+      };
+      let recentFiltered = recent.filter((r) => DATA_TYPES.includes(r.type));
+      const detailed = recentFiltered.filter(hasDetail);
+      const plain = recentFiltered.filter((r) => !hasDetail(r));
+      recentFiltered = detailed.concat(plain);
+      if (recentFiltered.length > 0) {
         h += "<div class=daycard><h3>" + _l2("最近调用","Recent Calls") + "</h3><ul>";
-        for (const r of recent.slice(0, 20)) {
-          const idInfo = r.id ? " #" + r.id : "";
-          const detail = r.detail ? " · " + esc(r.detail) : "";
-          h += "<li><span class=kind>" + esc(_type(r.type)) + "</span><span class=muted>#" + r.id + " " + esc((r.ts||"").replace("T"," ").slice(0,19)) + " " + esc(r.method) + "</span>" + (detail ? "<br><span>" + detail + "</span>" : "") + "</li>";
+        for (const r of recentFiltered.slice(0, 20)) {
+          let detailHtml = "";
+          if (r.detail) {
+            try {
+              const obj = JSON.parse(r.detail);
+              const parts = Object.entries(obj).map(([k,v]) => k + "=" + (typeof v === "object" ? JSON.stringify(v).slice(0,60) : String(v).slice(0,60)));
+              if (parts.length) detailHtml = " · " + esc(parts.join(", "));
+            } catch {
+              detailHtml = " · " + esc(r.detail);
+            }
+          }
+          h += "<li><span class=kind>" + esc(_type(r.type)) + "</span><span class=muted>#" + r.id + " " + esc((r.ts||"").replace("T"," ").slice(0,19)) + " " + esc(r.method) + "</span>" + (detailHtml ? "<br><span>" + detailHtml + "</span>" : "") + "</li>";
         }
         h += "</ul></div>";
       }
