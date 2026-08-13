@@ -19,6 +19,9 @@ const SYNONYMS: Record<string, string[]> = {
   manager: ["manager", "supervisor", "boss", "lead", "managed by"],
   theme: ["theme", "dark mode", "light mode", "color scheme", "editor"],
   rate: ["rate", "limit", "per minute", "requests"],
+  laptop: ["laptop", "notebook", "workstation", "thinkpad", "macbook", "computer", "machine"],
+  os: ["os", "operating system", "ubuntu", "macos", "windows", "linux", "distro"],
+  deploy: ["deploy", "deployed", "deploying", "deployment", "release", "ship", "rollout", "publish"],
   // 中文
   安装: ["安装", "装", "install", "setup"],
   测试: ["测试", "test", "tests", "check", "验证"],
@@ -91,7 +94,7 @@ export function retrieve(input: {
   query: string
   user_id: string
   top_k?: number
-  rows: Array<{ id: number; uuid: string; content: string; memory_ts: number; created_at: string }>
+  rows: Array<{ id: number; uuid: string; role?: string; content: string; memory_ts: number; created_at: string }>
 }): { data: Retrieved[] } {
   const query = String(input.query || "")
   const top_k = Math.max(1, Math.min(100, Number(input.top_k) || 100))
@@ -119,8 +122,12 @@ export function retrieve(input: {
     const { pref, rule } = typeBoost(r.content)
     let score = 0
     // 主题相关性是前提：必须命中至少一个词/短语，才在此之上加类型分与近因。
+    const userBoost = r.role === "user" ? 0.2 : 0
     if (overlap > 0 || phrase > 0) {
-      score = overlap * 0.7 + phrase * 0.15 + (1 - recency) * 0.05 + pref + rule
+      // 更新信号（switched/upgraded/migrated/changed/now prefer）→ 该 chunk 是新事实，略加分
+      const updateSignal = /(switched to|upgraded to|migrated to|changed to|now prefer|now use|updated to|currently|actually)/i.test(r.content) ? 0.2 : 0
+      const recencyW = (1 - recency) * 0.15
+      score = overlap * 0.6 + phrase * 0.15 + recencyW + pref + rule + userBoost + updateSignal
     } else {
       // 零词命中也无短语 → 完全无关（即使规则/偏好句也不该进）
       score = 0

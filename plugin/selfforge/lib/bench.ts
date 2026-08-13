@@ -167,7 +167,7 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
   if (!user_id) return { data: [] }
   const rows = db
     .query(
-      "SELECT id, uuid, session_id, content, memory_ts, created_at FROM bench_memories WHERE user_id = ? AND deleted = 0"
+      "SELECT id, uuid, session_id, role, content, memory_ts, created_at FROM bench_memories WHERE user_id = ? AND deleted = 0"
     )
     .all(user_id) as Array<{ id: number; uuid: string; session_id: string; content: string; memory_ts: number; created_at: string }>
   const { retrieve } = require("./retrieve")
@@ -180,9 +180,9 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
     if (tempIntent) {
       const tRows = db
         .query(
-          "SELECT t.memory_id, t.seq, m.uuid, m.content, m.memory_ts, m.created_at FROM bench_timeline t JOIN bench_memories m ON m.id = t.memory_id WHERE t.user_id = ? AND t.deleted = 0 AND m.deleted = 0 ORDER BY t.seq"
+          "SELECT t.memory_id, t.seq, m.uuid, m.role, m.content, m.memory_ts, m.created_at FROM bench_timeline t JOIN bench_memories m ON m.id = t.memory_id WHERE t.user_id = ? AND t.deleted = 0 AND m.deleted = 0 ORDER BY t.seq"
         )
-        .all(user_id) as Array<{ memory_id: number; seq: number; uuid: string; content: string; memory_ts: number; created_at: string }>
+        .all(user_id) as Array<{ memory_id: number; seq: number; uuid: string; role: string; content: string; memory_ts: number; created_at: string }>
       // first/最初/which version → 最小 seq
       const firstIntent = /(first|initially|最初|第一次|先|哪个版本|which version|最早)/i.test(query)
       if (firstIntent && tRows.length) {
@@ -202,13 +202,16 @@ export function benchSearch(input: { query: string; user_id: string; top_k?: num
         }
         return { data: base.data }
       }
-      // after/before + anchor（node 22）
-      const anchor = (query.match(/\bnode\s+(\d+)\b/i) || [])[0]
+      // after/before + anchor（从 query 中提取主题词，如 "Docker" / "pip install" / "node 22"）
+      const anchor = (query.match(/\b(?:node\s+\d+|docker|npm|ubuntu|github actions|pip)\b/i) || [])[0]
       if (anchor) {
         const anchorRow = tRows.find((r) => r.content.toLowerCase().includes(anchor.toLowerCase()))
         const dir = /(after|next|之后|然后|接下来|后来)/i.test(query) ? 1 : -1
         if (anchorRow) {
-          const target = dir === 1 ? tRows.find((r) => r.seq > anchorRow.seq) : tRows.slice().reverse().find((r) => r.seq < anchorRow.seq)
+          // Skip assistant replies when looking for the next temporal chunk
+          const target = dir === 1
+            ? tRows.find((r) => r.seq > anchorRow.seq && r.role !== "assistant")
+            : tRows.slice().reverse().find((r) => r.seq < anchorRow.seq && r.role !== "assistant")
           if (target) {
             const base = retrieve({ query, user_id, top_k: input.top_k, rows: rows.filter((r) => r.id !== target.memory_id) })
             if (!base.data.some((d) => d.id === target.uuid)) {
