@@ -29,6 +29,7 @@ import { recordSignal } from "./selfforge/lib/repair"
 import { touchWorkspace, scopeFor, fingerprintOf, mergeDuplicateWorkspaces } from "./selfforge/lib/workspace"
 import { summarizeSession, getSessionSummary } from "./selfforge/lib/summary"
 import { closeServer, ensureDashboard } from "./selfforge/lib/rpc"
+import { recordCall } from "./selfforge/lib/dashboard-log"
 
 export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   const db = initDb()
@@ -318,6 +319,11 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
 
     "tool.execute.after": async (input: any) => {
       try {
+        // Log every tool call
+        if (input.tool) {
+          const detail = input.args ? JSON.stringify(input.args).slice(0, 200) : ""
+          recordCall("tool", String(input.tool), detail)
+        }
         if (input.tool === "skill" && input.args?.name) {
           recordSkillUse(String(input.args.name))
         }

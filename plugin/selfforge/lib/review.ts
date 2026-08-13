@@ -327,7 +327,14 @@ export function curatorRun() {
     stats.memories_archived = r.archived ?? 0
   } catch {}
 
-  // --- Rules: expire rules not re-observed for a long time ---
+  // --- Rules: auto-escalate high-scoring + expire stale ---
+  try {
+    const { autoEscalateRules } = require("./rules")
+    const escalated = autoEscalateRules()
+    for (const e of escalated) {
+      if (e.action === "escalated") stats.rules_archived++ // count as positive action
+    }
+  } catch {}
   try {
     const rows = db
       .query("SELECT id, rule, updated_at, created_at, written_to FROM rules WHERE deleted = 0")

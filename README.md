@@ -1,26 +1,44 @@
 # selfforge
 
-A unified self-evolution engine for [OpenCode](https://opencode.ai). One plugin merges many capabilities into a single store with a single set of tools.
+A self-evolving agent memory engine. It learns from your conversations, tracks goals, manages persistent memory, distills reusable skills, escalates behavioral rules, and syncs knowledge across agents, machines and teams — all through one plugin and one SQLite database.
 
-Selfforge learns from your conversations, tracks goals, manages persistent memory, distills and optimizes reusable skills, escalates behavioral rules, repairs its own decisions, and syncs knowledge across agents, machines and teams — all through one plugin and one SQLite database.
-
-## What it merges
-
-| Capability | Origins | Surface |
-|---|---|---|
-| Conversation monitoring → review | autolearn | event hooks, review subagent |
-| Persistent memory + user profile | autolearn | `memory_*`, `user_*` |
-| Skill distillation/optimization | autolearn + opencode-self-improving-skills | `skill_*`, `evolution_*` |
-| Behavioral rules → AGENTS.md | self-improving-agent | `rule_*` |
-| Goal-driven PDCA loop | miles990/self-evolving-agent | `goal_*`, checkpoints CP0–CP6.5 |
-| Skill lifecycle curation | autolearn | `curator_*` |
-| Skill trial lifecycle + anti-hallucination | MemOS (memos-local-plugin) | `skill_status`, `skill_feedback`, `skill_verify`, `pattern_*` |
-| Decision repair (feedback → repairs) | MemOS `core/feedback` + `core/decision-repair` | `repair_*`, `feedback_classify` |
-| Work-environment awareness | MemOS workspace fingerprinting | `workspace_*`, scoped recall |
-| Cross-agent / platform transfer | own | `transfer_*`, `cli/selfforge.ts`, local JSON-RPC |
-| Team shared memory | own (git-backed) | `team_*` |
+`selfforge` runs as an [OpenCode](https://opencode.ai) plugin, but its core engine is dependency-free and can run standalone (`cli/selfforge.ts`, HTTP daemon, Docker).
 
 Everything is stored in a single SQLite database at `~/.evolve/unified.db` (or `$EVOLVE_HOME`).
+
+## Features
+
+- **Conversation monitoring & review** — turns each session's messages into review artifacts: memory, skills, rules, goals.
+- **Persistent memory + user profile** — tiered by strength (`hot/warm/cold/evictable`), with decay, dedup, scope isolation and TTL.
+- **Skill distillation & lifecycle** — distill reusable techniques into skills; each skill starts as `candidate` and graduates via trials/eta; unused skills are auto-archived.
+- **Behavioral rules → AGENTS.md** — rules are auto-scored (base 3, −1 per 60 days); high-score rules escalate into `AGENTS.md` automatically.
+- **Goal-driven PDCA loop** — active goals with checkpoints (CP0–CP6.5), progress advisory injected into the chat system prompt.
+- **Decision repair** — step-level success/failure signals draft deterministic repairs with evidence.
+- **Daily summary** — each session's final assistant conclusion, appended incrementally and quality-gated.
+- **Work-environment awareness** — workspaces are fingerprinted into stable `ws:` scope keys; scoped memories rank first.
+- **Cross-agent / platform transfer** — portable snapshot (`format: selfforge-snapshot`) with per-row sync identity.
+- **Team shared memory** — a git repo holds `snapshot.json`; `team_sync` pulls, merges (per-uuid LWW), re-exports and pushes.
+- **Web dashboard** — bilingual (中文/English) single-page panel: overview counts, memories, skills, rules, goals, checkpoints, daily summary, logs.
+
+## Memory model
+
+```
+~/.evolve/unified.db                single SQLite store
+  ├── memories / user_profile       memory + preferences (hot/warm/cold)
+  ├── session_messages + FTS5       full-text index of all conversation history
+  ├── skills                        distilled skills (mirrored to ~/.evolve/skills)
+  ├── rules                         behavioral rules (scored, escalate to AGENTS.md)
+  ├── goals + checkpoints           PDCA goal tracking
+  ├── repairs / signals             decision-repair: step success/failure + repair drafts
+  ├── pattern_signatures            recurring failure buckets (episode quorum → memory)
+  ├── workspaces                    environment fingerprint + ws: scoped memories
+  ├── session_summaries             fixed-size compressed session state
+  └── config                        node_id + Lamport clock (row-level sync identity)
+```
+
+Memories are ranked into `hot/warm/cold/evictable` by `strength`; strength decays with an adaptive half-life (tuned by access frequency, importance and recency), near-duplicates merge, stale memories get archived.
+
+**Ground truth hierarchy** — injected memory is authoritative over assumptions, but never overrides current facts: repo state, build scripts, test results and explicit instructions win; conflicts surface as stale memories.
 
 ## Install
 
@@ -44,11 +62,11 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 # restart opencode
 ```
 
-The script auto-detects the environment:
+The install script auto-detects the environment:
 
 - Copies plugin source → `~/.config/opencode/plugins/`
-- Copies selfforge + evolve-reviewer skills → `~/.agents/skills/`
-- If Bun is available, runs `bun build.mjs` to produce `compiled/selfforge.js` (required for desktop Node; the script points the config at .js if built, .ts if not)
+- Copies `selfforge` + `evolve-reviewer` skills → `~/.agents/skills/`
+- If Bun is available, runs `bun build.mjs` to produce `compiled/selfforge.js` (required for desktop Node; config points at `.js` if built, `.ts` if not)
 - Writes `opencode.json`/`jsonc`: `plugin`, `instructions` (`~/.evolve/memory.context.md`), `skills.paths` (`~/.evolve/skills`), `evolve-reviewer` agent
 - Verifies file completeness
 
@@ -57,266 +75,131 @@ The script auto-detects the environment:
 | Dependency | Purpose | If missing |
 |------------|---------|------------|
 | opencode | Runtime | Plugin won't load |
-| Bun (optional) | Build .js / CLI | CLI works with .ts; desktop needs Bun installed first |
+| Bun (optional) | Build `.js` / CLI | CLI works with `.ts`; desktop needs Bun first |
 | Node / git / bash or PowerShell | Install script & CLI | Can't install |
 
 > Everything else is self-contained: SQLite is built-in, no external services. First load creates `~/.evolve/unified.db` and `~/.evolve/memory.context.md` automatically.
 
-## Tools
+## Usage
 
-| Group | Tools |
-| --- | --- |
-| Memory | `memory_add`, `memory_search`, `memory_list`, `memory_strengthen`, `memory_weaken`, `memory_remove`, `memory_status`, `memory_brief`, `memory_candidates`, `memory_confirm`, `memory_reject`, `memory_feedback` |
-| Session state | `session_summary`, `session_summaries`, `session_search` |
-| Recall eval | `memory_eval` |
-| User profile | `user_add`, `user_list`, `user_remove` |
-| Skills | `skill_create`, `skill_patch`, `skill_list`, `skill_archive`, `skill_usage`, `skill_status`, `skill_feedback`, `skill_verify`, `skill_enable`, `skill_disable`, `skill_info`, `skill_install`, `skill_uninstall`, `skill_adopt` |
-| Rules | `rule_observe`, `rule_status`, `rule_escalate` |
-| Goals | `goal_start`, `goal_status`, `goal_checkpoint`, `goal_complete`, `goal_stop` |
-| Evolution | `evolution_status`, `evolution_propose`, `evolution_apply`, `evolution_reject` |
-| Session recall | `session_search` (FTS5 full-text search over all past conversations) || Curator | `curator_run`, `curator_status` |
-| Decision repair | `repair_run`, `repair_signal`, `feedback_classify`, `repair_status`, `repair_list`, `repair_accept`, `repair_reject` |
-| Pattern candidates | `pattern_status`, `pattern_record`, `pattern_induce`, `pattern_signature` |
-| Workspaces | `workspace_status`, `workspace_scan`, `workspace_list` |
-| Transfer | `transfer_export`, `transfer_import`, `transfer_preview`, `transfer_status` |
-| Team sync | `team_sync`, `team_status`, `team_init`, `team_ping` |
+### Inside OpenCode
 
-## Skill management
+- Type `/selfforge` — prints a terminal overview (memory/skill/goal/repair counts) and opens the browser panel on request.
+- Tools: `selfforge_status` (plain-text overview), `selfforge_dashboard` (ensure the daemon is up and open the browser), `selfforge_dashboard_stop`.
+- Memory/search/rule/goal tools: `memory_add`, `memory_search`, `memory_candidates`, `skill_create`, `skill_patch`, `rule_observe`, `rule_escalate`, `goal_start`, `goal_checkpoint`, `evolution_propose`, `curator_run`, and more.
 
-Selfforge is registered as an extra opencode skill source via `skills.paths: ["~/.evolve/skills"]`, so the skills it manages are the same ones opencode loads. Management operations:
+### Web dashboard
 
-| Action | Tools / dashboard |
-|---|---|
-| 说明 (explain) | `skill_info <name>` shows description, status, eta, usage, disk location, and whether opencode currently loads it. Dashboard 技能 · 说明 |
-| 启动 (start) | `skill_enable <name>` moves SKILL.md back under `~/.evolve/skills` (opencode loads it again) and restores a non-disabled status. Dashboard · 启动 |
-| 停止 (stop) | `skill_disable <name>` moves SKILL.md out to `~/.evolve/skills-disabled/` (outside the scanned path, so opencode really unloads it) and marks `status=disabled`. Nothing is deleted. Dashboard · 停止 |
-| 赞/踩 (thumbs) | Dashboard thumbs up/down buttons adjust a skill's eta (reliability) by ±0.1, driving graduation or retirement. |
-| 从文件目录安装 (install from dir) | `skill_install <dir>` scans `<dir>/**/SKILL.md`, copies each into `~/.evolve/skills`, registers/updates the skill row. Dashboard 技能 · 从目录安装 |
-| 接管 opencode 技能 (adopt) | `skill_adopt` **moves** every skill under `~/.config/opencode/skills` and `~/.agents/skills` into selfforge-managed `~/.evolve/skills` (the originals are removed, so selfforge becomes the single owner) and registers them. Dashboard 技能 · 接管opencode技能 |
-| 卸载 (uninstall) | `skill_uninstall <name>` hard-deletes the DB row and removes the folder from both live and disabled dirs. Irreversible (unlike `skill_archive` soft-delete or `skill_disable` stop). Dashboard · 卸载 |
+`selfforge serve` (or the plugin's auto-started daemon) binds http://127.0.0.1:9210/:
 
-Skill states: `candidate` → `active` → (`disabled` = stopped but retained, `archived` = retired by lifecycle) `stale`. Evolution only considers `active` skills with `use ≥ 2 AND fail ≥ 1`. Skills unused for 90 days (candidate/disabled) are auto-archived by the curator; active skills are exempt. Memories have a similar decay + TTL expiry, and rules expire after 180 days of inactivity.
+- `GET /` — single-page bilingual dashboard
+- `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/rules`, `/api/checkpoints`, `/api/workspaces`, `/api/errors`, `/api/stats`)
+- `POST /` — the JSON-RPC surface
+- Header buttons: language toggle (EN/中文), theme, refresh, hot-restart daemon
 
-## Dashboard
+### Standalone CLI (no OpenCode needed)
 
-The dashboard (`selfforge serve` → http://127.0.0.1:9210/) is a single-page bilingual UI:
-
-- **Language**: auto-selects by `navigator.language` (zh → Chinese, else English), remembers your choice in `localStorage` (`lang`), and has a manual `EN/中文` toggle. Skill descriptions switch to `description_en` in English mode.
-- **Tabs**: Memories, Skills, Rules, Goals, Checkpoints, Daily summary, Workspaces.
-- **Hot restart**: the header "Restart" button kills and respawns the daemon so newly compiled dashboard code loads without restarting opencode.
-- **Error log**: the header "Logs" panel shows runtime errors (window.onerror, unhandled rejections, RPC failures) with a ring buffer, refresh and clear.
-- **Daily summary**: shows each session's final assistant conclusion (appended incrementally, quality-gated, never overwrites older entries).
-
-## Architecture
-
-```
-~/.evolve/unified.db                single SQLite store
-  ├── memories / user_profile       memory + preferences (tiered: hot/warm/cold)
-  ├── session_messages + FTS5       full-text index of all conversation history
-  ├── skills                        distilled skills (mirrored to ~/.agents/skills/)
-  ├── rules                         behavioral rules for AGENTS.md escalation
-  ├── goals + checkpoints           PDCA goal tracking
-  ├── evolution                     GEPA-style candidates (human-gated apply)
-  ├── signals / repairs             decision-repair: step success/failure + repair drafts
-  ├── pattern_signatures            zero-LLM recurrence buckets (episode quorum → memory)
-  ├── workspaces                    environment fingerprint + ws: scoped memories
-  ├── session_summaries             fixed-size compressed session state (distilled, not raw replay)
-  ├── recall_evidence               per-word recall feedback (hits/positives/negatives)
-  └── config                        node_id + Lamport clock (row-level sync identity)
-
-opencode plugin (selfforge.ts)
-  ├── session hooks                 turn counting, buffering, secret redaction, social-closer filter
-  ├── tool.execute.after            skill usage tracking + failure/success signals
-  └── chat.system.transform         advisory injection (active goals, evolution candidates)
+```bash
+bun cli/selfforge.ts status                # node id, clock, DB path
+bun cli/selfforge.ts export <file.json>    # portable snapshot
+bun cli/selfforge.ts import <file.json>    # per-uuid LWW merge (--dry-run to preview)
+bun cli/selfforge.ts serve --port 9210     # dashboard + JSON-RPC
+bun cli/selfforge.ts team init <dir>       # team repo (optionally --remote)
+bun cli/selfforge.ts team sync [<dir>]     # pull, merge, re-export, push
+bun cli/selfforge.ts eval [--k <n>]        # recall precision benchmark
 ```
 
-Memory tiers and lifecycle: each memory is ranked into hot/warm/cold/evictable by `strength`, and passes through a temporary → active → permanent → archived lifecycle with promotion and demotion. Strength decays exponentially with an adaptive half-life (tuned by access frequency, importance and recency); inactive memories demote a lifecycle level, stale ones are archived, and near-duplicates merge. `memory_search` also injects recent evolution criteria as authoritative behavior guidance for short (≤ 15 char) queries.
+## Agent Memory Leaderboard
 
-## Design principles
+selfforge participates in the [Agent Memory](https://agentmemories.ai) benchmark (textual track) via the **academic × code** route: the platform builds and evaluates the submitted repository — no always-on host required.
 
-- **One engine, one store.** All self-improvement data lives under `~/.evolve/`.
-- **Ground Truth hierarchy.** Injected memory is authoritative over assumptions, but never overrides current facts: repo state, build scripts, test results and explicit instructions win, and conflicts surface as stale memories. See [docs/MEMORY_CONTRACT.md](docs/MEMORY_CONTRACT.md).
-- **Surgical recall.** `memory_search` returns keyword-scored matches on demand rather than dumping the store.
-- **Data ⇒ evolution.** Optimization candidates are only suggested after a skill shows `use ≥ 2 AND fail ≥ 1`.
-- **Human-gated.** Skill rewrites and AGENTS.md writes require explicit approval.
-- **Declining is valid.** Most sessions produce nothing worth capturing.
-- **Hygiene.** Trivial messages are filtered before buffering; memories decay with age and near-duplicates merge.
+The bench endpoint implements the synchronous Add/Search contract:
 
-## Privacy
+| Endpoint | Method | Behavior |
+|----------|--------|----------|
+| `/health` | GET | unauthenticated liveness (200) |
+| `/add` | POST | synchronously persists messages, returns `success:true` + echoed ids |
+| `/search` | POST | user-scoped, relevance-ordered `{data:[{id,content,score}]}`; never leak another user's memory |
 
-All data is stored locally under `~/.evolve/`. Nothing leaves your machine. No outbound requests.
+Running the bench service locally:
 
-## Structure
+```bash
+bun cli/selfforge.ts serve --port 9210
+# or with Docker (evaluation image, only /add /search /health)
+docker build -t selfforge-bench .
+docker run -p 9210:9210 -e SELFFORGE_PORT=9210 -e EVOLVE_HOME=/data selfforge-bench
+```
 
-The plugin is modular so each upgrade touches the smallest possible surface:
+Smoke test:
 
-- `plugin/selfforge.ts` — thin entry: lifecycle hooks only (event buffering, threshold/idle review, goal/evolution advisories, dispose).
-- `plugin/selfforge/lib/` — **engine layer, zero OpenCode dependency**: `db`, `memory`, `skills`, `rules`, `goals`, `evolution`, `review`, `user`, `repair`, `patterns`, `verify`, `workspace`, `transfer`, `sync`, `rpc`, plus `index.ts` as the engine import surface (usable by CLI/RPC/other agents).
-- `plugin/selfforge/lib/tools/` — tool registration grouped by domain: `memory.ts`, `user.ts`, `skills.ts`, `rules.ts`, `goals.ts`, `evolution.ts`, `curator.ts`, `repair.ts`, `patterns.ts`, `workspace.ts`, `transfer.ts`, `team.ts`. Add or fix a tool here without touching the entry.
-- `cli/selfforge.ts` — standalone CLI (status/export/import/serve/team) powered by the zero-dependency engine.
+```bash
+curl -s localhost:9210/health
+curl -s -X POST localhost:9210/add -H 'content-type: application/json' \
+  -d '{"request_id":"r1","messages":[{"role":"user","content":"prefer Node"}],"user_id":"u1","session_id":"s1"}'
+curl -s -X POST localhost:9210/search -H 'content-type: application/json' \
+  -d '{"query":"runtime","user_id":"u1","top_k":10}'
+```
 
-## Sync-ready rows (Phase 0)
+## Version history
 
-Every data table (`memories`, `skills`, `rules`, `goals`, `checkpoints`, `evolution`, `observations`, `user_profile`, `signals`, `repairs`, `pattern_signatures`) carries row-level identity so replicas can be merged across agents, machines and platforms:
+### v1.9.3 (2026-08-13) Agent Memory benchmark + rule scoring + i18n
 
-- `uuid` — unique row id (RFC 4122), backfilled on legacy DBs at migration.
-- `origin` — the `node_id` that created the row (persisted in `config`).
-- `deleted` — tombstone: soft deletes set `deleted = 1` so removals replicate.
-- Lamport clock in `config.lamport_clock`, bumped by `db.stamp()` on every write for conflict ordering.
+- **Add/Search contract endpoints** for the [Agent Memory](https://agentmemories.ai) textual track (`/add`, `/search`, `/health`) with strict `user_id` isolation; `lib/bench.ts` + `tests/bench.test.ts`.
+- **Dockerfile** — evaluation image exposing only the bench HTTP endpoints.
+- **Rule auto-scoring** — base 3 points, −1 per 60 days, plus frequency/recency/domain/feedback bonuses; rules panel gains thumbs up/down; high-score rules auto-escalate to `AGENTS.md`.
+- **Dashboard i18n** — EN/中文 toggle persisted in `localStorage.lang`, remembers the active tab; skill descriptions switch to `description_en` in English mode.
 
-## MemOS-inspired engine (Phase 1)
+### v1.9.2 (2026-08-11) In-process review + stable dashboard daemon
 
-Four capabilities adapted from MemOS (`memos-local-plugin`), all deterministic and zero-LLM:
+- **Reviews run inside opencode, no external CLI needed** (`spawnReviewSdk`); the detached CLI spawn remains only as a last-resort fallback.
+- **Detached dashboard daemon** — survives opencode restarts; port stays fixed.
+- Generic per-row edit/delete across dashboard tabs.
+- Soft-delete filter fixes; consolidated `review_triggered` observations.
 
-- **Skill trial lifecycle:** every skill starts as `candidate` with `eta = (passed+1)/(attempted+2)` (Beta(1,1)). It graduates to `active`/`archived` after a quorum of trials, `skill_feedback` (+/− 0.1) supports rehab/retire, and `evolution_apply` feeds a reward drift (`0.7η + 0.3m`).
-- **Decision repair:** step-level success/failure signals (`signals_auto`, default on) feed a burst detector (rolling window, cooldown). A repair burst or a classified user preference (`用X代替Y`/`prefer X over Y`/negations) drafts a deterministic repair with evidence; `repair_accept`/`repair_reject` gate application.
-- **Anti-hallucination verification:** `skill_verify` checks a skill draft's tool mentions against real evidence (observed tool calls, code-fence commands) and reports tool-coverage + evidence resonance. Drafts fail fast instead of shipping fabricated tool names.
-- **Pattern signature candidate pool:** a recurring sub-problem is fingerprinted as `primaryTag|secondaryTag|tool|errCode`, hashed to a 16-hex bucket. Only buckets with ≥ N distinct episodes (default 2, TTL-pruned) induce a candidate memory — a single flaky episode never mints knowledge.
+### v1.9.1 (2026-08-11) Dashboard management panel
 
-## Work-environment awareness (Phase 2)
+- Editable/deletable memories in the dashboard panel.
+- `memory.daily` daily summary section.
+- Chinese labels for tiers/status/goals.
 
-Workspaces are fingerprinted from cheap stack markers (`package.json`, `pyproject.toml`, `go.mod`, `Dockerfile`, …) into a stable `ws:<basename>:<hash>` scope key. Memories can be scoped to that key, and `memoryRecall` applies a `scopeBoost` so the current workspace's lessons rank first — no embeddings needed.
+### v1.9.0 (2026-08-10) OpenCode UI integration
 
-## Cross-agent / platform transfer (Phase 3)
+- Auto background server on plugin load (`serve(9210)`).
+- `/selfforge` command + `selfforge_status`/`selfforge_dashboard` tools.
+- Terminal text overview (`dashboardText()`); singleton serving.
 
-A portable snapshot serializes the whole store (`format: selfforge-snapshot`) with per-row identity. `transfer_export`/`transfer_import` move it between machines/agents/platforms; importing is a per-uuid last-write-wins merge (newer `updated_at` wins, tie-broken by node id, tombstones delete). The zero-dependency engine (`lib/index.ts`) also powers:
+### v1.8.0 (2026-08-10) Native memory state
 
-- `cli/selfforge.ts` — `status`, `export`, `import` (with `--dry-run`), `serve`, `team` subcommands; runs anywhere with bun, no OpenCode needed.
-- local JSON-RPC server (`lib/rpc.ts`) — `ping`, `status`, `memory.list`, `skills.list`, `workspaces.list`, `goals.list`, `snapshot.export`/`snapshot.import` over HTTP.
+- Fixed-size session state (`session_summaries`), informative write gate, recall evidence loop (`recall_evidence`), tiered injection fusion, recall eval benchmark.
 
-## Team shared memory (Phase 4)
+### v1.7.0 (2026-08-10) Engine phases 1–5
 
-A git repo holds `snapshot.json` as the shared truth. `team_sync` runs pull → per-uuid LWW merge into the local store → re-export → commit → push, so any number of nodes converge. `team_init` bootstraps a repo (optionally with a remote); tombstones propagate as removals.
+- Skill trial lifecycle, decision repair, anti-hallucination verification, pattern candidates, workspace awareness, cross-agent transfer, team sync, visual dashboard.
 
-## Visual management (Phase 5)
+### v1.5.0 (2026-08-09) Sync primitives
 
-`selfforge serve` (or `bun cli/selfforge.ts serve`) starts a zero-dependency HTTP server:
+- Row-level sync identity (`uuid` + `origin` + `deleted` tombstone), node_id + Lamport clock.
 
-- `GET /` — single-page dashboard (overview counts, memories, skills, goals, pending repairs, pattern candidates).
-- `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/repairs`, `/api/patterns`, `/api/workspaces`).
-- `POST /` — the JSON-RPC surface above.
+### v1.4.0 (2026-08-09) Modularized entry
 
-### Integrated into OpenCode
+- Tool registration moved into `lib/tools/*` grouped by domain.
 
-On load the plugin spawns a **detached `serve-daemon.js` child process** to host the dashboard/RPC server (port 9210, port-stepping on conflict), so the browser panel stays up across opencode restarts and the port does not drift. Inside OpenCode:
+### v1.3.0 (2026-08-09) Memory contract & contamination defense
 
-- Type `/selfforge` — prints a terminal overview (memory/skill/goal/repair/pattern counts), and opens the browser panel on request.
-- Tools: `selfforge_status` returns a plain-text overview; `selfforge_dashboard` ensures the daemon is up and opens the browser; `selfforge_dashboard_stop` shuts it down.
-- In-process serving (`serve()` / `closeServer()`) remains as a fallback when spawning the daemon is unavailable.
+- Candidate zone, scope isolation, confidence & TTL, store-level write guard, memory trace, regression suite.
 
-### Conversation review without an external CLI
+### v1.2.0 (2026-08-09) Memory lifecycle management
 
-Reviews used to spawn the `opencode` CLI — but the npm-installed binary is often a broken postinstall stub and simply never runs, which silently disabled memory generation on desktop. Reviews now run **in-process via the opencode SDK**: the plugin opens a child session on the running server (`client.session.create` + `client.session.promptAsync` with the `evolve-reviewer` agent) and the reviewer runs inside opencode itself. The detached CLI spawn stays only as a last-resort fallback.
+- Adaptive exponential decay, lifecycle promotion/demotion, memory classification, daily brief, VACUUM maintenance.
 
-- Review sub-sessions are tracked (`reviewSessionIDs`) and their messages ignored, so a review never re-triggers a review.
-- Each review trigger now logs a single consolidated `review_triggered` observation (was three: `review_spawned` + `session_summary_built` + `review_triggered`).
+### v1.1.0 (2026-08-09) Recall & session search
 
-## Metis-inspired memory (v1.8)
+- Ground Truth hierarchy, surgical `memory_search`, FTS5 session search, decay & dedup.
 
-Five capabilities adapted from the [MemTensor Metis](https://github.com/MemTensor/Metis) memory-foundation-model paper — `native memory state`, `learned utilization`, and `fixed-size session state` — kept deterministic and zero-LLM:
+### v1.0.0 (2026-08-07) Initial release
 
-- **Fixed-size session state (`session_summary`):** conversation history is distilled into a bounded digest of user directives/decisions (`session_summaries`), so later queries read a compact state instead of replaying the raw transcript — the plugin builds it automatically after each review.
-- **Informative write gate:** a confirmed write must add enough novel tokens over the existing store (`memory_novelty_gate`, default 0.35); redundant rewrites are rejected instead of bloating memory. Candidate writes are exempt.
-- **Recall evidence loop (`memory_feedback`):** every recall records per-word hits; explicit useful/not-useful feedback adjusts word-level precision weights that re-rank future recalls — learned utilization without an LLM.
-- **Tiered injection fusion:** `composeMemoryContext` fuses memory in priority tiers — current workspace first, then scoped lessons, then general — so the most situational signal is closest to the querying head.
-- **Recall eval benchmark (`memory_eval` / `selfforge eval`):** seeds a known fixture set and reports precision@k over a battery of positive and negative queries, keeping recall regressions visible.
+- Unified self-evolution engine, single SQLite store, one-command install.
 
 ## License
 
 MIT
-
-## Version history
-
-### v1.9.2 (2026-08-11) In-process review + stable dashboard daemon
-
-- **Reviews run inside opencode, no external CLI needed:** the npm-installed `opencode.exe` is often a broken postinstall stub, so spawned-CLI reviews silently never ran (which hid memory generation). Reviews now open a child session on the running server (`client.session.create` + `promptAsync` with the `evolve-reviewer` agent) — `spawnReviewSdk`. The detached CLI spawn remains only as a last-resort fallback (`review_fallback_cli` observation on failure).
-- **Detached dashboard daemon:** the plugin spawns `serve-daemon.js` as a separate child process, so the dashboard survives opencode restarts and the port stays fixed; in-process `serve()` is the fallback.
-- **Generic per-row edit/delete:** all dashboard tabs (memories, skills, goals/checkpoints, evolution, repairs, patterns, observations, workspaces) now support `data.update` / `data.delete` JSON-RPC with per-tab description text.
-- **Workspace hygiene:** duplicate workspace rows for the same directory merge into one keeper (`mergeDuplicateWorkspaces`), `checkpoints.maintain` prunes done/orphaned checkpoints, and `workspace.open` spawns the OS file manager.
-- **Soft-delete filter fix:** goals/evolution/repairs dashboard APIs and checkpoint pruning now skip `deleted = 1` rows instead of surfacing soft-deleted entries.
-- **Consolidated review observations:** each trigger writes one `review_triggered` row instead of three (`review_spawned` + `session_summary_built` + `review_triggered`); stale/failed review litter was cleaned up.
-- Tests: full suite **119 pass / 0 fail / 341 expect across 13 files**.
-
-### v1.9.1 (2026-08-11) Dashboard management panel
-
-- **Editable/deletable memories:** the dashboard memory panel shows a scrollable list with 编辑/删除 per row; `memory.update` and `memory.delete` JSON-RPC methods edit content or archive a memory by id/uuid.
-- **Daily summary section:** new `memory.daily` aggregates session summaries by day (sessions, fact count, up to 20 facts) and renders a 每日总结 panel.
-- **Chinese labels:** all tier/status/goal/repair labels render as concise Chinese (热/温/冷, 已确认/候选, 进行中/已完成, etc.).
-- Tests: `tests/rpc.test.ts` adds memory update/delete/daily cases — full suite 104 pass.
-
-### v1.9.0 (2026-08-10) OpenCode UI integration
-
-- **Auto background server:** the plugin starts the dashboard/RPC server on load (`serve(9210)`, port-stepping on conflict), so `selfforge serve`'s panel is always available.
-- **`/selfforge` command:** an OpenCode global command prints a terminal overview (`selfforge_status`) and opens the browser panel when wanted (`selfforge_dashboard`); `selfforge_dashboard_stop` stops it.
-- **Terminal text overview:** new `dashboardText()` renders counts, recent memories, skills, goals, pending repairs and mature patterns without a network round trip.
-- **Singleton serving:** `serve()` is safe to call repeatedly (no duplicate listen); `closeServer()` shuts down on plugin dispose.
-- Tests: `tests/rpc.test.ts` adds `dashboardText` + `serve` singleton cases — full suite 101 pass.
-
-### v1.8.0 (2026-08-10) Metis-inspired memory (native state, learned utilization, fixed-size state)
-
-- **Fixed-size session state:** new `session_summaries` table + `lib/summary.ts` distills a session's user directives/decisions into a bounded digest; the plugin builds it after every review and fuses it into the injected context. Tools: `session_summary`, `session_summaries`.
-- **Informative write gate:** `memoryAddDedup` now rejects confirmed writes whose token novelty over the existing store falls below `memory_novelty_gate` (default 0.35); candidates are exempt. New `memoryNovelty` / `noveltyGate`.
-- **Recall evidence loop:** new `recall_evidence` table records per-word hits on every recall; `memory_feedback` (+/−) adjusts word-level precision weights that re-rank future recalls. `recallFeedback` also strengthens/weakens the underlying memory by id.
-- **Tiered injection fusion:** `composeMemoryContext` ranks confirmed memories workspace → scoped → general and can fuse a session-state block.
-- **Recall eval:** new `lib/eval.ts` seeds a fixture set and reports precision@k; surfaced as `memory_eval` tool and `selfforge eval` CLI.
-- Tests: new `tests/metis.test.ts` (13 cases) — full suite 99 pass.
-
-### v1.7.0 (2026-08-10) MemOS engine + cross-agent + team sync + dashboard (Phases 1–5)
-
-- **Skill trial lifecycle (Phase 1):** skills carry Beta(1,1) `eta`, start as `candidate`, graduate by trial quorum (`skill_candidate_trials`, default 3), reward drift from `evolution_apply`, rehab/retire via `skill_feedback`. Tools: `skill_status`, `skill_feedback`.
-- **Decision repair (Phase 1):** step-level success/failure signals (`signals_auto`) feed a burst detector + cooldown; classified user preferences and anti-patterns draft deterministic repairs with evidence. Tools: `repair_run`, `repair_signal`, `feedback_classify`, `repair_status`, `repair_list`, `repair_accept`, `repair_reject`.
-- **Anti-hallucination verification (Phase 1):** `skill_verify` scores a skill draft's tool coverage + evidence resonance against real observed tool calls and code-fence commands; `skill_create` reports the advisory.
-- **Pattern signature candidates (Phase 1):** recurring sub-problems are fingerprinted as `primaryTag|secondaryTag|tool|errCode`, hashed to 16-hex buckets; only buckets with ≥ N distinct episodes (TTL-pruned) induce candidate memories. Tools: `pattern_status`, `pattern_record`, `pattern_induce`, `pattern_signature`.
-- **Workspace awareness (Phase 2):** `workspaces` table + stack-marker fingerprint → `ws:` scope keys; `memoryRecall` applies a `scopeBoost`. Tools: `workspace_status`, `workspace_scan`, `workspace_list`.
-- **Cross-agent/platform transfer (Phase 3):** portable snapshot + per-uuid LWW import; CLI `cli/selfforge.ts`; zero-dependency local JSON-RPC. Tools: `transfer_export`, `transfer_import`, `transfer_preview`, `transfer_status`.
-- **Team shared memory (Phase 4):** git repo holds `snapshot.json`; `team_sync` = pull → LWW merge → re-export → push. Tools: `team_sync`, `team_status`, `team_init`, `team_ping`.
-- **Visual management (Phase 5):** `selfforge serve` serves a single-page dashboard at `GET /` plus JSON endpoints at `/api/*`; JSON-RPC stays under `POST /`.
-- Tests: `skill-lifecycle`, `repair`, `verify`, `patterns`, `workspace`, `transfer`, `rpc`, `team`.
-
-### v1.5.0 (2026-08-09) Sync primitives (Phase 0)
-
-- Row-level sync identity on all data tables: `uuid` + `origin` + `deleted` tombstone; legacy DBs backfilled idempotently at migration.
-- `node_id` persisted in `config`; Lamport clock (`config.lamport_clock`) bumped on every write — the foundation for cross-agent / cross-platform / team-synced memory.
-- Explicit deletions (memory remove/reject, skill archive, profile remove) set the tombstone so they replicate as removals, not leftovers.
-- Export surface: `lib/index.ts` re-exports the engine independently of the OpenCode adapter.
-- New test suite `tests/sync.test.ts` (node id, clock monotonicity, stamping, tombstones, migration backfill).
-
-### v1.4.0 (2026-08-09) Modularized entry
-
-- Tool registration moved out of the entry file into `lib/tools/*` grouped by domain (memory/user/skills/rules/goals/evolution/curator). The entry now holds lifecycle hooks only.
-- `install.sh` copies the new `lib/tools/` directory; no `opencode.json` changes required.
-
-### v1.3.0 (2026-08-09) Memory contract & contamination defense
-
-- **Candidate zone:** auto-inferred memories land as `candidate`; they are never recalled or injected until a human confirms them (`memory_candidates`, `memory_confirm`, `memory_reject`). Explicit user statements write directly as confirmed.
-- **Scope:** memories carry an optional path-glob `scope` so a lesson in one module never leaks into another module's recall.
-- **Confidence & TTL:** `confidence` 1–10 plus `expires_at` for temporary facts — expired memories are excluded from recall and archived by decay.
-- **Store-level write guard:** credentials, tokens and code/file snapshots are rejected at write time.
-- **Priority clarified:** injected memory is authoritative over assumptions but never overrides current repo/CI/test facts; conflicts surface as stale memories.
-- **Memory contract:** documented operating rules in `docs/MEMORY_CONTRACT.md`.
-- **Memory trace:** every recall records query/scope/recalled ids/injected criteria in `observations` for reconstructable debugging.
-- **Contamination regression suite:** `tests/memory-fixtures.test.ts` (7 high-risk fixtures: secrets, candidates, expiry, scope leakage, injection purity, dedup promotion).
-
-### v1.2.0 (2026-08-09) Memory lifecycle management
-
-- **Schema migration:** `memories` gains `last_accessed_at`, `access_count`, `importance`, `lifecycle`, `type`; legacy DBs are upgraded idempotently via `PRAGMA table_info` probing.
-- **Adaptive exponential decay:** strength decays by a half-life formula; the half-life adapts to access frequency, importance and recency. Stale memories demote a lifecycle level; long-inactive ones are archived.
-- **Lifecycle promotion/demotion:** temporary → active → permanent by access count (15/30); manual weakening or inactivity demotes.
-- **Memory classification:** `memory_add` accepts `type` (preference/insight/instruction/fact/decision/episodic) and `importance` (1–10).
-- **Daily brief:** new `memory_brief` tool reporting active/archived counts, today's additions, type & lifecycle distribution and health suggestions.
-- **Short-query injection:** `memory_search` auto-injects recently applied evolution criteria as authoritative behavior guidance for queries ≤ 15 chars.
-- **VACUUM maintenance:** low-frequency DB compaction folded into the idle maintenance loop (default daily, configurable).
-
-### v1.1.0 (2026-08-09) Recall & session search
-
-- Ground Truth hierarchy: injected memory is authoritative, so the agent uses it instead of re-running discovery.
-- Surgical recall: `memory_search` returns keyword-scored matches on demand.
-- FTS5 session full-text search: new `session_search` across all past conversations.
-- Decay & dedup: memories age-decay; near-duplicates (sim ≥ 0.7) auto-merge and strengthen.
-- New smoke test suite.
-
-### v1.0.0 (2026-08-07) Initial release
-
-- Unified self-evolution engine: conversation review, persistent memory, skill distillation/optimization, behavioral rule escalation, PDCA goal tracking, skill lifecycle curation.
-- Single SQLite store `~/.evolve/unified.db` plus injected context file `~/.evolve/memory.context.md`.
-- One-command install scripts `install.sh` and `install-remote.sh`.

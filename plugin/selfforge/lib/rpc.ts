@@ -13,13 +13,14 @@ import { skillCreate, skillList, skillStatus, skillArchive, skillPatch, skillInf
 import { curatorRun } from "./review"
 import { workspaceList, mergeDuplicateWorkspaces } from "./workspace"
 import { goalStatus, goalStart, maintainCheckpoints } from "./goals"
-import { ruleObserve, ruleStatus } from "./rules"
+import { ruleObserve, ruleStatus, ruleFeedback, autoEscalateRules } from "./rules"
 import { evolutionPropose, evolutionList } from "./evolution"
 import { patternCandidates, recordPattern } from "./patterns"
 import { runRepair, recordSignal } from "./repair"
 // getSession, sessionSearch removed
 import { DASHBOARD_HTML } from "./dashboard-html"
-import { dashLog, dashLogList, dashLogClear, dashLogCount } from "./dashboard-log"
+import { dashLog, dashLogList, dashLogClear, dashLogCount, recordCall, getCallStats, resetCallStats } from "./dashboard-log"
+import { benchAdd, benchSearch } from "./bench"
 /**
  * Phase 3 — local JSON-RPC endpoint (HTTP/1.1, zero dependencies).
  *
@@ -64,6 +65,13 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 async function handle(method: string, params: any): Promise<any> {
+  // Track calls per data type (with detail from params)
+  const type = method.split(".")[0]
+  const dataTypes = ["memory", "skill", "rule", "goal", "checkpoint", "evolution", "repair", "pattern", "workspace", "transfer", "team", "dashboard", "diagnostic", "daily", "session"]
+  if (dataTypes.includes(type)) {
+    const detail = params ? JSON.stringify(params).slice(0, 120) : ""
+    recordCall(type, method, detail)
+  }
   switch (method) {
     case "ping":
       return "pong"
@@ -110,6 +118,13 @@ async function handle(method: string, params: any): Promise<any> {
       if (!params?.name || !params?.description) throw new Error("params.name and params.description required")
       return skillCreate(String(params.name), String(params.description), params.body ? String(params.body) : "")
     }
+    case "rules.feedback": {
+      if (!params?.id) throw new Error("params.id required")
+      const positive = params.positive !== false && params.positive !== "false" && params.positive !== 0
+      return ruleFeedback(String(params.id), Boolean(positive))
+    }
+    case "rules.auto-escalate":
+      return autoEscalateRules()
     case "rules.create": {
       if (!params?.rule) throw new Error("params.rule required")
       return ruleObserve({
@@ -174,6 +189,11 @@ async function handle(method: string, params: any): Promise<any> {
       return { entries: dashLogList(Number(params?.limit ?? 50)), ...dashLogCount() }
     case "diagnostics.clear":
       return dashLogClear()
+    case "diagnostics.stats":
+      return getCallStats()
+    case "diagnostics.reset-stats":
+      resetCallStats()
+      return { ok: true }
     case "diagnostics.report": {
       const level = params?.level === "warn" || params?.level === "info" ? params.level : "error"
       const entry = dashLog(level, String(params?.source || "client"), String(params?.message || "unknown"), {
@@ -588,8 +608,8 @@ function apiGoals() {
 
 function apiRules() {
   return getDb()
-    .query("SELECT id, uuid, rule, domain, explicit_scope, count, created_at FROM rules WHERE deleted = 0 ORDER BY id DESC LIMIT 100")
-    .all() as Array<{ id: number; uuid: string; rule: string; domain: string; explicit_scope: string; count: number; created_at: string }>
+    .query("SELECT id, uuid, rule, domain, explicit_scope, count, score, feedback, created_at FROM rules WHERE deleted = 0 ORDER BY score DESC, count DESC, id DESC LIMIT 100")
+    .all() as Array<{ id: number; uuid: string; rule: string; domain: string; explicit_scope: string; count: number; score: number; feedback: number; created_at: string }>
 }
 
 function apiCheckpoints() {
@@ -724,16 +744,17 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, url: strin
   if (route === "/api/status") return json(res, apiStatus())
   if (route === "/api/ping") return json(res, { pong: true, pid: process.pid, port: activeServerPort() })
   if (route === "/api/dashboard") return json(res, apiDashboard())
-  if (route === "/api/memories") return json(res, apiMemories())
-  if (route === "/api/skills") return json(res, apiSkills())
-  if (route === "/api/goals") return json(res, apiGoals())
-  if (route === "/api/repairs") return json(res, apiRepairs())
-  if (route === "/api/patterns") return json(res, apiPatterns())
-  if (route === "/api/workspaces") return json(res, apiWorkspacesData())
-  if (route === "/api/rules") return json(res, apiRules())
-  if (route === "/api/checkpoints") return json(res, apiCheckpoints())
-  if (route === "/api/evolution") return json(res, apiEvolution())
+  if (route === "/api/memories") { recordCall("memory", "api.memories", "list"); return json(res, apiMemories()) }
+  if (route === "/api/skills") { recordCall("skill", "api.skills", "list"); return json(res, apiSkills()) }
+  if (route === "/api/goals") { recordCall("goal", "api.goals", "list"); return json(res, apiGoals()) }
+  if (route === "/api/repairs") { recordCall("repair", "api.repairs", "list"); return json(res, apiRepairs()) }
+  if (route === "/api/patterns") { recordCall("pattern", "api.patterns", "list"); return json(res, apiPatterns()) }
+  if (route === "/api/workspaces") { recordCall("workspace", "api.workspaces", "list"); return json(res, apiWorkspacesData()) }
+  if (route === "/api/rules") { recordCall("rule", "api.rules", "list"); return json(res, apiRules()) }
+  if (route === "/api/checkpoints") { recordCall("checkpoint", "api.checkpoints", "list"); return json(res, apiCheckpoints()) }
+  if (route === "/api/evolution") { recordCall("evolution", "api.evolution", "list"); return json(res, apiEvolution()) }
   if (route === "/api/errors") return json(res, { entries: dashLogList(100), ...dashLogCount() })
+  if (route === "/api/stats") return json(res, { ...getCallStats(), ...dashLogCount() })
   res.writeHead(404, { "Content-Type": "application/json" })
   res.end(JSON.stringify({ error: `not found: ${route}` }))
 }
@@ -756,6 +777,8 @@ export async function serve(port = 9210): Promise<number> {
     }
     const url = (req.url || "/").split("?")[0]
     if (req.method === "GET") {
+      // Leaderboard Health: unauthenticated liveness (any 2xx).
+      if (url === "/health") { res.writeHead(200); res.end("ok"); return }
       if (url === "/api/dashboard") return json(res, apiDashboard())
       await serveStatic(req, res, req.url || "/")
       return
@@ -767,6 +790,36 @@ export async function serve(port = 9210): Promise<number> {
     }
     try {
       const raw = await readBody(req)
+      // Leaderboard Add/Search endpoints (synchronous, own content type).
+      if (url === "/add") {
+        try {
+          const body = JSON.parse(raw)
+          const result = benchAdd({
+            request_id: body.request_id,
+            messages: body.messages,
+            user_id: body.user_id,
+            session_id: body.session_id,
+          })
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify(result))
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ detail: { reason: (e as Error).message } }))
+        }
+        return
+      }
+      if (url === "/search") {
+        try {
+          const body = JSON.parse(raw)
+          const result = benchSearch({ query: body.query, user_id: body.user_id, top_k: body.top_k })
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify(result))
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ detail: { reason: (e as Error).message } }))
+        }
+        return
+      }
       const reqObj = JSON.parse(raw) as RpcRequest
       if (!reqObj || reqObj.method === undefined) {
         res.writeHead(400, { "Content-Type": "application/json" })

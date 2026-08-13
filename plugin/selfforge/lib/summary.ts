@@ -347,6 +347,7 @@ export type DailySummary = {
   done_count: number
   pending_count: number
   review: string
+  review_en: string
   kind_breakdown: Array<{ kind: string; count: number }>
   items: DailyItem[]
 }
@@ -457,6 +458,11 @@ export function dailySummaries(opts?: { limit?: number }): DailySummary[] {
       .map((k) => `「${k.kind}」×${k.count}`)
       .join("、")
     const review = `共 ${items.length} 条会话结论,集中在 ${topKinds || "一般"}。已落实 ${done} 条、待跟进 ${pending} 条。`
+    const enKinds = kindBreakdown.slice(0, 3).map((k) => {
+      const en = { "文档/GitHub":"Docs/GitHub", "界面/UI":"UI/UX", "数据/清理":"Data/Cleanup", "记忆/复盘":"Memory/Review", "功能/能力":"Feature", "工作区":"Workspace", "目标/检查点":"Goals/CP", "迁移/同步":"Migration/Sync", "其他":"Other" }[k.kind] || k.kind
+      return `${en}×${k.count}`
+    }).join(", ")
+    const review_en = `${items.length} conclusions, focus: ${enKinds || "general"}. Done ${done}, pending ${pending}.`
     const sessionIds = new Set(entries.map((e) => e.session_id))
     out.push({
       day,
@@ -465,6 +471,7 @@ export function dailySummaries(opts?: { limit?: number }): DailySummary[] {
       done_count: done,
       pending_count: pending,
       review,
+      review_en,
       kind_breakdown: kindBreakdown,
       items: items.slice(0, 20),
     })

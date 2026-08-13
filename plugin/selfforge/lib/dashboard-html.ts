@@ -97,26 +97,7 @@ export const DASHBOARD_HTML = html`
   .daycard .kind { flex:none; min-width:70px; font-size:10px; color:var(--dim); border:1px solid var(--line); border-radius:4px; padding:0 4px; text-align:center; margin-top:1px; white-space:nowrap; }
   .daycard .st-done { color:#2e7d32; white-space:nowrap; } .daycard .st-pending { color:#c77700; white-space:nowrap; } .daycard .st-info { color:var(--dim); white-space:nowrap; }
   .daycard .review { margin:4px 0 8px; padding:6px 8px; background:rgba(127,127,127,.08); border-radius:6px; line-height:1.5; color:var(--strong); }
-  #errBtn { position:relative; }
-  #errBtn .badge { position:absolute; top:-6px; right:-8px; background:var(--bad); color:#fff; border-radius:99px; font-size:10px; min-width:16px; height:16px; line-height:16px; padding:0 4px; display:none; }
-  #errBtn.has-err .badge { display:inline-block; }
-  #errPanel { display:none; position:fixed; right:16px; bottom:16px; width:min(480px,92vw); max-height:50vh; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 28px rgba(0,0,0,.35); z-index:99; flex-direction:column; overflow:hidden; }
-  #errPanel.open { display:flex; }
-  #errPanel .eh { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line); }
-  #errPanel .eh b { flex:1; color:var(--strong); font-size:13px; }
-  #errPanel .eh button { background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:5px; padding:2px 8px; font-size:12px; cursor:pointer; }
-  #errPanel .eh button:hover { color:var(--strong); border-color:var(--acc); }
-  #errList { overflow:auto; padding:8px 12px; font-size:12px; }
-  #errList .erow { padding:6px 0; border-bottom:1px solid var(--line); }
-  #errList .erow:last-child { border-bottom:0; }
-  #errList .elvl { display:inline-block; font-size:10px; padding:0 6px; border-radius:4px; margin-right:6px; }
-  #errList .elvl-error { background:var(--s-archived-bg); color:var(--bad); }
-  #errList .elvl-warn { background:var(--t-hot-bg); color:var(--warn); }
-  #errList .elvl-info { background:var(--t-cold-bg); color:var(--dim); }
-  #errList .emsg { color:var(--strong); word-break:break-word; }
-  #errList .emeta { color:var(--dim); font-size:11px; margin-top:2px; }
-  #errList .estack { color:var(--dim); font-size:10px; white-space:pre-wrap; max-height:80px; overflow:auto; margin-top:4px; display:none; }
-  #errList .erow.open .estack { display:block; }
+  // errBtn CSS removed
 </style>
 </head>
 <body>
@@ -124,17 +105,12 @@ export const DASHBOARD_HTML = html`
   <h1>selfforge</h1>
   <span class="sub" id="sub">—</span>
   <div class="actions">
-    <button class="ghost" id="errBtn" onclick="toggleErrPanel()" title="运行错误日志">错误<span class="badge" id="errBadge">0</span></button>
     <button class="ghost" id="themeBtn" onclick="toggleTheme()">夜间</button>
     <button class="ghost" id="langBtn" onclick="toggleLang()" title="切换界面语言">EN</button>
     <button onclick="location.reload()">刷新</button>
     <button onclick="restartDaemon()" title="重启 daemon 进程以加载新编译代码">重启</button>
   </div>
 </header>
-<div id="errPanel">
-  <div class="eh"><b>运行错误日志</b><button onclick="refreshErrPanel()">刷新</button><button onclick="clearErrPanel()">清空</button><button onclick="toggleErrPanel()">关闭</button></div>
-  <div id="errList" class="empty">暂无错误</div>
-</div>
 <div class="overview"><div class="cards" id="counts"></div></div>
 <div class="layout">
   <nav id="nav"></nav>
@@ -148,6 +124,7 @@ export const DASHBOARD_HTML = html`
     <section class="pane" id="pane-checkpoints"><div class="panel" id="checkpoints"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-daily"><div class="panel" id="daily"><div class="empty">加载中…</div></div></section>
     <section class="pane" id="pane-workspaces"><div class="panel" id="workspaces"><div class="empty">加载中…</div></div></section>
+    <section class="pane" id="pane-logs"><div class="panel" id="logs"><div class="empty">加载中…</div></div></section>
   </main>
 </div>
 <script>
@@ -164,6 +141,8 @@ function _l(zh, en){ return __lang === "zh" ? zh : en; }
 function toggleLang(){
   __lang = __lang === "zh" ? "en" : "zh";
   try { localStorage.setItem("lang", __lang); } catch (e) {}
+  // Save active tab before reload
+  try { localStorage.setItem("activeTab", activeTab); } catch (e) {}
   location.reload();
 }
 function applyTheme(t){
@@ -188,26 +167,11 @@ function applyLang(){
     const t = document.documentElement.getAttribute("data-theme");
     return _l(t === "light" ? "日间" : "夜间", t === "light" ? "Light" : "Dark");
   })();
-  document.getElementById("errBtn").childNodes[0].textContent = _l("错误","Logs");
-  // Set header buttons by index (order: errBtn, themeBtn, langBtn, refresh, restart)
   const acts = document.querySelector("header .actions");
   if (acts) {
     const btns = acts.querySelectorAll("button");
-    if (btns[3]) btns[3].textContent = _l("刷新","Reload");
-    if (btns[4]) { btns[4].textContent = _l("重启","Restart"); btns[4].title = _l("重启 daemon 进程以加载新编译代码","Restart daemon to load new code"); }
-  }
-  const errPanel = document.getElementById("errPanel");
-  if (errPanel) {
-    const eh = errPanel.querySelector(".eh");
-    if (eh) {
-      eh.querySelector("b").textContent = _l("运行错误日志","Error Log");
-      const btns = eh.querySelectorAll("button");
-      if (btns[0]) btns[0].textContent = _l("刷新","Refresh");
-      if (btns[1]) btns[1].textContent = _l("清空","Clear");
-      if (btns[2]) btns[2].textContent = _l("关闭","Close");
-    }
-    const list = errPanel.querySelector("#errList");
-    if (list && list.classList.contains("empty")) list.textContent = _l("暂无错误","No errors");
+    if (btns[2]) btns[2].textContent = _l("刷新","Reload");
+    if (btns[3]) { btns[3].textContent = _l("重启","Restart"); btns[3].title = _l("重启 daemon 进程以加载新编译代码","Restart daemon to load new code"); }
   }
 }
 applyLang();
@@ -216,7 +180,6 @@ const __localErrs = [];
 function pushLocalErr(level, source, message, stack){
   __localErrs.unshift({ id: "L" + __localErrs.length, ts: new Date().toISOString(), level: level || "error", source: source || "client", message: String(message || ""), stack: stack || "" });
   if (__localErrs.length > 50) __localErrs.length = 50;
-  updateErrBadge();
 }
 async function reportErr(level, source, message, stack, meta){
   pushLocalErr(level, source, message, stack);
@@ -231,56 +194,7 @@ window.addEventListener("unhandledrejection", (ev) => {
   const r = ev.reason;
   reportErr("error", "unhandledrejection", (r && r.message) || String(r), r && r.stack);
 });
-let __remoteErrCount = 0;
-function updateErrBadge(){
-  const btn = document.getElementById("errBtn");
-  const badge = document.getElementById("errBadge");
-  if (!btn || !badge) return;
-  const local = __localErrs.filter((e) => e.level === "error").length;
-  const n = Math.max(local, __remoteErrCount);
-  badge.textContent = String(n);
-  btn.classList.toggle("has-err", n > 0);
-}
-function toggleErrPanel(){
-  const p = document.getElementById("errPanel");
-  if (!p) return;
-  const open = !p.classList.contains("open");
-  p.classList.toggle("open", open);
-  if (open) refreshErrPanel();
-}
-async function refreshErrPanel(){
-  const box = document.getElementById("errList");
-  if (!box) return;
-  let remote = [];
-  try {
-    const j = await get("/api/errors");
-    remote = (j && j.entries) || [];
-    __remoteErrCount = Number(j && j.errors) || remote.filter((e) => e.level === "error").length;
-  } catch (e) { __remoteErrCount = 0; }
-  const seen = new Set();
-  const all = [];
-  for (const e of __localErrs.concat(remote)) {
-    const k = (e.ts || "") + "|" + (e.message || "");
-    if (seen.has(k)) continue;
-    seen.add(k);
-    all.push(e);
-  }
-  all.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
-  if (!all.length) { box.className = "empty"; box.textContent = "暂无错误"; __remoteErrCount = 0; updateErrBadge(); return; }
-  box.className = "";
-  box.innerHTML = all.slice(0, 40).map((e, i) => {
-    return '<div class="erow" data-i="' + i + '"><div><span class="elvl elvl-' + esc(e.level||"error") + '">' + esc(e.level||"error") + '</span><span class="emsg">' + esc(e.message) + '</span></div><div class="emeta">' + esc((e.ts||"").replace("T"," ").slice(0,19)) + " · " + esc(e.source||"") + '</div>' + (e.stack ? '<div class="estack">' + esc(e.stack) + '</div>' : "") + "</div>";
-  }).join("");
-  box.querySelectorAll(".erow").forEach((el) => el.addEventListener("click", () => el.classList.toggle("open")));
-  updateErrBadge();
-}
-async function clearErrPanel(){
-  __localErrs.length = 0;
-  __remoteErrCount = 0;
-  try { await rpc("diagnostics.clear", {}); } catch (e) {}
-  updateErrBadge();
-  refreshErrPanel();
-}
+// toggleErrPanel, refreshErrPanel, clearErrPanel removed (moved to Logs tab)
 async function get(p){
   const r = await fetch(p);
   if (!r.ok) {
@@ -332,9 +246,12 @@ const TABS = [
   { id:"goals", label:_l("目标","Goals"), key:"goals", desc:_l("目标驱动循环，含检查点追踪","Goal-driven PDCA loop with checkpoints"), gen:{ method:"goals.create", prompt:__lang==="zh"?"目标：":"Goal:", desc:__lang==="zh"?"北星目标（可选）：":"North star (optional):", args:["goal","northStar"] } },
   { id:"checkpoints", label:_l("检查点","CP"), key:"checkpoints", desc:_l("目标下 CP0..CP6.5 的阶段状态","CP0..CP6.5 milestone status") },
   { id:"daily", label:_l("每日总结","Daily"), key:"daily", desc:_l("按天聚合的会话要点(蒸馏提取)","Daily session digests"), distill:true },
-  { id:"workspaces", label:_l("工作区","Workspaces"), key:"workspaces", desc:_l("访问过的工作目录指纹","Visited workspace fingerprints") }
+  { id:"workspaces", label:_l("工作区","Workspaces"), key:"workspaces", desc:_l("访问过的工作目录指纹","Visited workspace fingerprints") },
+  { id:"logs", label:_l("日志","Logs"), key:"logs", desc:_l("运行错误日志与数据调用统计","Runtime errors & call stats") }
 ];
-const TITLES = { memories:_l("记忆","Memories"), skills:_l("技能","Skills"), rules:_l("规则","Rules"), goals:_l("目标","Goals"), checkpoints:_l("检查点","CP"), daily:_l("每日总结","Daily"), workspaces:_l("工作区","Workspaces") };
+const TITLES = { memories:_l("记忆","Memories"), skills:_l("技能","Skills"), rules:_l("规则","Rules"), goals:_l("目标","Goals"), checkpoints:_l("检查点","CP"), daily:_l("每日总结","Daily"), workspaces:_l("工作区","Workspaces"), logs:_l("日志","Logs") };
+const KIND_EN = { "文档/GitHub":"Docs/GitHub", "界面/UI":"UI/UX", "数据/清理":"Data/Cleanup", "记忆/复盘":"Memory/Review", "功能/能力":"Feature", "工作区":"Workspace", "目标/检查点":"Goals/CP", "迁移/同步":"Migration/Sync", "其他":"Other" };
+function kindLabel(zh){ return __lang === "zh" ? zh : (KIND_EN[zh] || zh); }
 const KIND_EDIT_LABEL = {
   skills:_l("编辑技能描述：","Edit skill description:"), rules:_l("编辑规则内容：","Edit rule:"), goals:_l("编辑目标：","Edit goal:"), checkpoints:_l("编辑备注：","Edit notes:"), workspaces:_l("编辑名称：","Edit name:")
 };
@@ -363,8 +280,13 @@ async function delMem(id){
 }
 window.delMem = delMem;
 let memoriesById = {};
-let activeTab = "memories";
+let activeTab = (() => {
+  try { var s = localStorage.getItem("activeTab"); if (s) return s; } catch (e) {}
+  return "memories";
+})();
 function switchTab(id){
+  // Fallback if pane doesn't exist (e.g. removed tab saved in localStorage)
+  if (!document.getElementById("pane-" + id)) id = "memories";
   activeTab = id;
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("active", p.id === "pane-" + id));
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === id));
@@ -461,6 +383,14 @@ async function skillRate(name, positive){
   } catch (e) { alert(e.message); }
 }
 // runSkillCurator removed
+async function ruleRate(id, positive){
+  try {
+    const r = await rpc("rules.feedback", { id, positive: !!positive });
+    if (r.error) return alert(r.error);
+    alert(_l("已评分","Rated") + ": " + (r.name || "") + " " + _l("评分","score") + "=" + r.score.toFixed(1));
+    await boot();
+  } catch (e) { alert(e.message); }
+}
 function skillRowAct(s){
   const en = s.status === "disabled" ? '<button onclick="skillRun(' + "'skills.enable'" + ',' + "'" + esc(s.name) + "'" + ')">' + _l("启动","Enable") + '</button>' : '<button class=del onclick="skillRun(' + "'skills.disable'" + ',' + "'" + esc(s.name) + "'" + ')">' + _l("停止","Stop") + '</button>';
   const up = '<button onclick="skillRate(' + "'" + esc(s.name) + "'" + ',true)" title="' + _l("有用，提高η","Useful, raise η") + '">' + _l("赞","👍") + '</button>';
@@ -512,7 +442,7 @@ async function exportDaily(){
       txt += "## " + d.day + "  (" + d.session_count + " 个会话 · " + d.fact_count + " 条事项)\\n\\n";
       if (d.review) txt += d.review + "\\n\\n";
       for (const f of d.items) {
-        txt += "- [" + f.kind + "] [" + { done:"已落实", pending:"待跟进", info:"新信息" }[f.status] + "]";
+        txt += "- [" + kindLabel(f.kind) + "] [" + { done:"已落实", pending:"待跟进", info:"新信息" }[f.status] + "]";
         if (f.text) txt += "\\n  " + f.text;
         txt += "\\n";
       }
@@ -539,7 +469,7 @@ async function boot(){
   memoriesById = {};
   for (const m of memories) memoriesById[m.uuid || m.id] = m;
   const st = dash.status;
-  document.getElementById("sub").textContent = "节点 " + st.node_id + " · 时钟 " + st.clock + " · " + (st.home || st.db_path);
+  document.getElementById("sub").textContent = _l("节点","Node") + " " + st.node_id + " · " + _l("时钟","clock") + " " + st.clock + " · " + (st.home || st.db_path);
   const counts = dash.counts;
   document.getElementById("counts").innerHTML = Object.entries(counts).filter(([k]) => !["evolution","repairs","patterns"].includes(k)).map(([k,v]) => "<div class=card><b>" + v + "</b><span>" + zh(COUNT_ZH, k, k) + "</span></div>").join("");
   const nav = document.getElementById("nav");
@@ -548,6 +478,7 @@ async function boot(){
     return '<button data-tab="' + t.id + '"' + (t.id === activeTab ? ' class=active' : '') + '><span>' + t.label + "</span>" + (t.key ? "<span class=cnt>" + n + "</span>" : "") + "</button>";
   }).join("");
   nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => switchTab(b.getAttribute("data-tab"))));
+  switchTab(activeTab); // apply restored tab (language toggle preserves tab)
   updateToolbar();
   const memBox = document.getElementById("memories");
   if (!memories.length) memBox.innerHTML = '<div class="empty">' + _l("暂无记忆","No memories") + '</div>';
@@ -561,8 +492,8 @@ async function boot(){
     const stCls = { done: "st-done", pending: "st-pending", info: "st-info" };
     const statusTxt = { done: _l("已落实","Done"), pending: _l("待跟进","Pending"), info: _l("新信息","Info") };
     return "<div class=daycard><h3>" + d.day + "</h3><div class=meta>" + d.session_count + " " + _l("个会话","sessions") + " · " + d.fact_count + " " + _l("条事项","facts") + " · " + _l("已落实","Done") + " " + d.done_count + " · " + _l("待跟进","Pending") + " " + d.pending_count + "</div>" +
-      (d.review ? "<div class=review>" + esc(d.review) + "</div>" : "") +
-      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(f.kind) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span>" + esc(f.text || "") + "</span></li>").join("") + "</ul></div>";
+      (d.review ? "<div class=review>" + esc(__lang === "zh" ? d.review : (d.review_en || d.review)) + "</div>" : "") +
+      "<ul>" + d.items.map((f) => "<li><span class=kind>" + esc(kindLabel(f.kind)) + "</span><span class=" + stCls[f.status] + ">[" + statusTxt[f.status] + "]</span><span>" + esc(f.text || "") + "</span></li>").join("") + "</ul></div>";
   }).join("") : '<div class="empty">' + _l("暂无总结","No summaries") + '</div>';
   const skBox = document.getElementById("skills");
   if (!skills.length) skBox.innerHTML = '<div class="empty">' + _l("暂无技能","No skills") + '</div>';
@@ -581,9 +512,64 @@ async function boot(){
   const wsBox = document.getElementById("workspaces");
   wsBox.innerHTML = workspaces.length ? "<div class=table-wrap><table><tr><th>" + _l("名称","Name") + "</th><th>" + _l("路径","Path") + "</th><th>" + _l("访问","Visits") + "</th><th>" + _l("操作","Actions") + "</th></tr>" + workspaces.map(w => "<tr><td>" + esc(w.name) + "</td><td class=muted>" + esc(w.path || "") + "</td><td class=muted>" + esc((w.last_seen || "").slice(0,10)) + " · " + w.visits + "</td><td>" + '<span class=act><button class="open-dir" onclick="openDir(' + "'" + esc(w.id) + "'" + ')">' + _l("打开目录","Open") + '</button>' + rowAct("workspaces", w.id, w.name, w.name) + "</span></td></tr>").join("") + "</table></div>" : '<div class="empty">' + _l("暂无工作区","No workspaces") + '</div>';
   const ruBox = document.getElementById("rules");
-  ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>" + _l("规则","Rule") + "</th><th>" + _l("域","Domain") + "</th><th>" + _l("范围","Scope") + "</th><th>" + _l("次数","Count") + "</th><th>" + _l("操作","Actions") + "</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td class=muted>" + esc(zh({ global:_l("全局","Global"), local:_l("本地","Local") }, r.explicit_scope, r.explicit_scope)) + "</td><td>" + r.count + "</td><td>" + rowAct("rules", r.uuid, "rule", r.rule) + "</td></tr>").join("") + "</table></div>" : '<div class="empty">' + _l("暂无规则","No rules") + '</div>';
+  ruBox.innerHTML = rules.length ? "<div class=table-wrap><table><tr><th>" + _l("规则","Rule") + "</th><th>" + _l("域","Domain") + "</th><th>" + _l("评分","Score") + "</th><th>" + _l("次数","Count") + "</th><th>" + _l("操作","Actions") + "</th></tr>" + rules.map(r => "<tr><td>" + esc(r.rule) + "</td><td class=muted>" + esc(r.domain || "") + "</td><td>" + (r.score != null ? (r.score >= 6 ? '<span class="tag s-active">' + esc(String(r.score)).slice(0,3) + '</span>' : r.score >= 4 ? '<span class="tag s-candidate">' + esc(String(r.score)).slice(0,3) + '</span>' : '<span class="tag s-stale">' + esc(String(r.score)).slice(0,3) + '</span>') : '<span class="tag">-</span>') + "</td><td>" + r.count + "</td><td>" + '<span class=act><button onclick="ruleRate(' + "'" + esc(r.uuid || r.id) + "'" + ',true)" title="' + _l("有用，提高评分","Useful, raise score") + '">' + _l("赞","👍") + '</button><button class=del onclick="ruleRate(' + "'" + esc(r.uuid || r.id) + "'" + ',false)" title="' + _l("无用，降低评分","Useless, lower score") + '">' + _l("踩","👎") + '</button>' + rowAct("rules", r.uuid, "rule", r.rule) + "</span></td></tr>").join("") + "</table></div>" : '<div class="empty">' + _l("暂无规则","No rules") + '</div>';
   const cpBox = document.getElementById("checkpoints");
   cpBox.innerHTML = checkpoints.length ? function(){ var groups={},i; for(i=0;i<checkpoints.length;i++){ var c=checkpoints[i],g=c.goal||"(" + _l("无目标","none") + ")"; if(!groups[g]||groups[g].cp<c.cp) groups[g]=c } var entries=[]; for(var k in groups) entries.push(groups[k]); entries.sort(function(a,b){return a.cp>b.cp?-1:1}); return "<div class=table-wrap><table><tr><th>" + _l("目标","Goal") + "</th><th>" + _l("检查点","CP") + "</th><th>" + _l("状态","Status") + "</th><th>" + _l("备注","Notes") + "</th><th>" + _l("操作","Actions") + "</th></tr>" + entries.slice(0,20).map(function(c){return "<tr><td class=muted>"+esc(c.goal||"")+"</td><td>"+esc(c.cp)+"</td><td>"+esc(zh({done:_l("完成","Done"),pending:_l("待办","Pending"),skipped:_l("跳过","Skipped"),failed:_l("失败","Failed")},c.status,c.status))+"</td><td class=muted>"+esc(c.notes||"")+"</td><td>"+rowAct("checkpoints",c.uuid,_l("检查点","CP"),c.notes||"")+"</td></tr>"}).join("")+"</table></div>" }() : '<div class="empty">' + _l("暂无检查点","No checkpoints") + '</div>';
+  const lgBox = document.getElementById("logs");
+  const _zh = __lang === "zh"; // capture language for async callback
+  try {
+    Promise.all([get("/api/errors"), get("/api/stats")]).then(([errData, statsData]) => {
+      const errs = (errData && errData.entries) || [];
+      const stats = (statsData && statsData.counters) || {};
+      const recent = (statsData && statsData.recent) || [];
+      const _l2 = (zh, en) => _zh ? zh : en;
+      const _type = (t) => _zh ? ({ checkpoint:"检查点", evolution:"演进", memory:"记忆", pattern:"模式", repair:"修复", rule:"规则", skill:"技能", workspace:"工作区", transfer:"迁移", team:"团队", dashboard:"面板", diagnostic:"诊断", daily:"每日总结", session:"会话", goal:"目标" }[t] || t) : t;
+      let h = "";
+      // Per-day breakdown
+      const byDay = (statsData && statsData.byDay) || {};
+      const dayKeys = Object.keys(byDay).sort().reverse();
+      if (dayKeys.length > 0) {
+        h += "<div class=daycard><h3>" + _l2("按日统计","Daily Stats") + "</h3><ul>";
+        for (const day of dayKeys.slice(0, 7)) {
+          const types = byDay[day];
+          const lines = Object.keys(types).sort().map((t) => _type(t) + ":" + types[t]).join(" ");
+          h += "<li><span class=muted>" + esc(day) + "</span> <span>" + esc(lines) + "</span></li>";
+        }
+        h += "</ul></div>";
+      }
+      // Call counts
+      const statKeys = Object.keys(stats);
+      if (statKeys.length > 0) {
+        h += "<div class=daycard><h3>" + _l2("数据调用统计","Call Stats") + "</h3><div class=meta>" + (_zh ? "共 " + (statsData.totalCalls || 0) + " 次调用" : "Total " + (statsData.totalCalls || 0) + " calls") + "</div><ul>";
+        for (const k of statKeys.sort()) {
+          h += "<li><span class=kind>" + esc(_type(k)) + "</span><span>" + esc(String(stats[k])) + " " + _l2("次","calls") + "</span></li>";
+        }
+        h += "</ul></div>";
+      }
+      // Recent calls with ID
+      if (recent.length > 0) {
+        h += "<div class=daycard><h3>" + _l2("最近调用","Recent Calls") + "</h3><ul>";
+        for (const r of recent.slice(0, 20)) {
+          const idInfo = r.id ? " #" + r.id : "";
+          const detail = r.detail ? " · " + esc(r.detail) : "";
+          h += "<li><span class=kind>" + esc(_type(r.type)) + "</span><span class=muted>#" + r.id + " " + esc((r.ts||"").replace("T"," ").slice(0,19)) + " " + esc(r.method) + "</span>" + (detail ? "<br><span>" + detail + "</span>" : "") + "</li>";
+        }
+        h += "</ul></div>";
+      }
+      // Error entries
+      if (errs.length > 0) {
+        h += "<div class=daycard><h3>" + _l2("错误日志","Error Log") + " (" + errs.length + ")</h3><ul>";
+        for (const e of errs.slice(0, 20)) {
+          const lvl = _zh ? ({ error:"错误", warn:"警告", info:"信息" }[e.level] || e.level) : (e.level || "error");
+          h += "<li><span class=kind>" + esc(lvl) + "</span><span class=muted>" + esc((e.ts||"").replace("T"," ").slice(0,19)) + " " + esc(e.source||"") + "</span><br><span>" + esc(e.message) + "</span></li>";
+        }
+        if (errs.length > 20) h += "<li><span class=muted>... " + (errs.length - 20) + " " + _l2("更多","more") + "</span></li>";
+        h += "</ul></div>";
+      }
+      if (!h) h = '<div class="empty">' + _l2("暂无日志","No logs") + '</div>';
+      lgBox.innerHTML = h;
+    }).catch(() => { lgBox.innerHTML = '<div class="empty">' + _l2("暂无日志","No logs") + '</div>'; });
+  } catch (e) { lgBox.innerHTML = '<div class="empty">' + _l2("暂无日志","No logs") + '</div>'; }
 }
 async function restartDaemon(){
   const btn = document.querySelector('header .actions button:last-child');
@@ -607,9 +593,7 @@ async function restartDaemon(){
 boot().catch((e) => {
   reportErr("error", "boot", e.message || String(e), e.stack);
   const mem = document.getElementById("memories");
-  if (mem) mem.innerHTML = '<div class="empty">加载失败：' + esc(e.message || e) + ' — 点右上角「错误」查看详情</div>';
-  const p = document.getElementById("errPanel");
-  if (p) { p.classList.add("open"); refreshErrPanel(); }
+  if (mem) mem.innerHTML = '<div class="empty">' + _l("加载失败：","Load failed: ") + esc(e.message || e) + ' — ' + _l("点左侧「日志」查看详情","see Logs tab for details") + '</div>';
 });
 </script>
 </body>
