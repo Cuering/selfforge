@@ -383,9 +383,9 @@ let lastGoalReviewAt = 0
       try {
         // Log every tool call — but map selfforge data tools to their business type
         // (memory/skill/rule/goal/…) so the dashboard call-log shows concrete items
-        // instead of a generic "tool" bucket.
+        // instead of a generic "tool" bucket. Also capture the tool's RETURN output
+        // so the log shows which specific memory/rule/goal was hit, not just params.
         if (input.tool) {
-          const detail = input.args ? JSON.stringify(input.args).slice(0, 300) : ""
           const t = String(input.tool)
           let type = "tool"
           if (/^(memory|recall)_/.test(t)) type = "memory"
@@ -396,7 +396,25 @@ let lastGoalReviewAt = 0
           else if (/^pattern/.test(t)) type = "pattern"
           else if (/^repair/.test(t)) type = "repair"
           else if (/^curator|^session|^transfer|^team|^workspace/.test(t)) type = String(t.split("_")[0])
-          recordCall(type, t, detail)
+          // Params (what was asked) + result (which item(s) came back).
+          let detail = input.args ? JSON.stringify(input.args).slice(0, 200) : ""
+          let result = ""
+          try {
+            const out = input.output
+            const outText =
+              typeof out === "string"
+                ? out
+                : out && typeof out === "object"
+                  ? (out as any).output ?? (out as any).text ?? (out as any).content ?? JSON.stringify(out)
+                  : ""
+            if (typeof outText === "string" && outText.trim()) result = outText.trim()
+          } catch {}
+          if (result) {
+            // Trim result to a short first-line summary of the actual item content.
+            const firstLine = result.split(/\r?\n/)[0].slice(0, 160)
+            detail += " ⇒ " + firstLine
+          }
+          recordCall(type, t, detail.slice(0, 320))
         }
         if (input.tool === "skill" && input.args?.name) {
           recordSkillUse(String(input.args.name))
