@@ -197,6 +197,21 @@ export function goalStop(goalId: number) {
   return getGoal(goalId)
 }
 
+/** Map a CP id to a human-readable stage description (progress guidance). */
+const CP_LABELS: Record<string, string> = {
+  "CP0": "定义北星目标与验收",
+  "CP0.5": "对齐目标与完成标准",
+  "CP1": "检索相关记忆/上下文",
+  "CP1.5": "一致性检查（事实校准）",
+  "CP2": "实施与构建/测试",
+  "CP3": "里程碑确认（本轮达成）",
+  "CP3.5": "失败复盘",
+  "CP4": "迭代总结",
+  "CP5": "复盘或修复收尾",
+  "CP6": "健康检查",
+  "CP6.5": "收尾与归档",
+}
+
 export function goalAdvisory(): string | null {
   const goals = getDb()
     .query("SELECT * FROM goals WHERE deleted = 0 AND status = 'active' ORDER BY updated_at DESC LIMIT 3")
@@ -204,9 +219,13 @@ export function goalAdvisory(): string | null {
   if (goals.length === 0) return null
   return goals
     .map((g) => {
-      const done = goalCheckpoints(g.id).filter((c) => c.status === "done").length
-      const total = goalCheckpoints(g.id).length
-      return `- Goal "${g.goal}" (iter ${g.iteration}/${g.max_iterations}, CP ${done}/${total})`
+      const cps = goalCheckpoints(g.id)
+      const done = cps.filter((c) => c.status === "done").length
+      const total = cps.length
+      const pending = cps.find((c) => c.status === "pending")
+      const next = pending ? `下一步: ${pending.cp} (${CP_LABELS[pending.cp] || "推进中"})` : "检查点已完成，可 goal_complete"
+      const criteria = g.completion_criteria ? ` 验收: ${g.completion_criteria.slice(0, 120)}` : ""
+      return `- Goal "${g.goal}" (iter ${g.iteration}/${g.max_iterations}, CP ${done}/${total})\n  ${next}${criteria}`
     })
     .join("\n")
 }

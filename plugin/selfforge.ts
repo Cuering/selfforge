@@ -355,7 +355,17 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
           if (live) advisories.push(live)
         } catch {}
         const ga = goalAdvisory()
-        if (ga) advisories.push(`## Active Goals\n${ga}`)
+        if (ga) {
+          advisories.push(`## Active Goals\n${ga}`)
+          advisories.push(
+            `## Goal-Conduct\n` +
+              `These are the active goals the user is consciously working toward. ` +
+              `If the current user request furthers a goal, keep pushing that goal's next step; ` +
+              `when you complete meaningful progress this turn, call goal_checkpoint (goalId, cp, notes) ` +
+              `to record it. When all its checkpoints are done and acceptance criteria pass, call goal_complete. ` +
+              `If the current request is unrelated, do not force it onto a goal — just answer normally.`
+          )
+        }
         const ea = evolutionAdvisory()
         if (ea) advisories.push(`## Evolution Candidates\n${ea}`)
         // Rule hot-escalation: promote newly high-scoring rules to AGENTS.md and
