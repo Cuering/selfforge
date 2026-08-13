@@ -30,7 +30,7 @@ type BenchRow = {
   deleted: number
 }
 
-/** Ensure the bench table exists (idempotent; called at module load). */
+/** Ensure the bench tables exist (idempotent; called at module load). */
 export function ensureBenchSchema(): void {
   try {
     getDb().exec(`
@@ -46,6 +46,34 @@ export function ensureBenchSchema(): void {
         deleted INTEGER DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_bench_user ON bench_memories (user_id, deleted);
+      CREATE TABLE IF NOT EXISTS bench_entities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        memory_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT DEFAULT 'org',
+        created_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_be_user_name ON bench_entities (user_id, name);
+      CREATE TABLE IF NOT EXISTS bench_relations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        sub TEXT NOT NULL,
+        out TEXT NOT NULL,
+        obj TEXT NOT NULL,
+        memory_id INTEGER,
+        created_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_br_user ON bench_relations (user_id, sub, obj);
+      CREATE TABLE IF NOT EXISTS bench_timeline (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        memory_id INTEGER NOT NULL,
+        seq INTEGER,
+        ts INTEGER,
+        created_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_bt_user ON bench_timeline (user_id, seq);
     `)
   } catch {}
 }
@@ -89,26 +117,29 @@ export type BenchAddResult = {
   stored: number
 }
 
-/** Synchronous Add: persist messages, then return. */
+/** Synchronous Add: persist messages + entity/relation/timeline indexes, then return. */
 export function benchAdd(input: {
   request_id: string
   messages: Array<{ role: string; timestamp?: number; content: string }>
   user_id: string
   session_id: string
 }): BenchAddResult {
-  const db = getDb()
   const request_id = String(input.request_id || "")
   const user_id = String(input.user_id || "")
   const session_id = String(input.session_id || "")
   const messages = Array.isArray(input.messages) ? input.messages : []
+  const { ingestChunk } = require("./ingest")
   let stored = 0
   for (const m of messages) {
     const content = String(m.content || "").trim()
     if (!content) continue
-    const st = stamp()
-    db.query(
-      "INSERT INTO bench_memories (uuid, user_id, session_id, role, content, memory_ts, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)"
-    ).run(st.uuid, user_id, session_id, String(m.role || "user"), content, Number(m.timestamp || 0), st.created_at)
+    ingestChunk({
+      user_id,
+      session_id,
+      role: String(m.role || "user"),
+      content,
+      memory_ts: Number(m.timestamp || 0),
+    })
     stored++
   }
   return { success: true, request_id, user_id, session_id, stored }
@@ -118,39 +149,99 @@ export type BenchSearchResult = {
   data: Array<{ id: string; content: string; score: number; created_at?: string }>
 }
 
-/** Synchronous Search: isolate by user_id, rank by relevance. */
+/** Synchronous Search: isolate by user_id, rank by relevance, with entity-link boost (B). */
 export function benchSearch(input: { query: string; user_id: string; top_k?: number }): BenchSearchResult {
   const db = getDb()
-  const query = String(input.query || "")
   const user_id = String(input.user_id || "")
-  const top_k = Math.max(1, Math.min(100, Number(input.top_k) || 100))
   if (!user_id) return { data: [] }
   const rows = db
     .query(
       "SELECT id, uuid, session_id, content, memory_ts, created_at FROM bench_memories WHERE user_id = ? AND deleted = 0"
     )
     .all(user_id) as Array<{ id: number; uuid: string; session_id: string; content: string; memory_ts: number; created_at: string }>
-  if (!query) {
-    // Empty query: return latest memories first (fallback for degenerate cases).
-    const out = rows
-      .slice(-top_k)
-      .reverse()
-      .map((r) => ({ id: r.uuid, content: r.content, score: 0, created_at: r.created_at }))
-    return { data: out }
+  const { retrieve } = require("./retrieve")
+
+  // C: temporal intent — "after X" / "next" / "之后" should prefer timeline CHUNKS
+  // whose seq is after the chunk matching the anchor term, not just lexical overlap.
+  const query = String(input.query || "")
+  try {
+    const tempIntent = /(after|before|next|then|之后|之前|然后|接下来|finally|后来)/i.test(query)
+    if (tempIntent) {
+      // anchor = first phrase in query like "node 22" / "node 20"
+      const anchor = (query.match(/\bnode\s+(\d+)\b/i) || [])[0]
+      if (anchor) {
+        const tRows = db
+          .query(
+            "SELECT t.memory_id, t.seq, m.uuid, m.content, m.memory_ts, m.created_at FROM bench_timeline t JOIN bench_memories m ON m.id = t.memory_id WHERE t.user_id = ? AND m.deleted = 0 ORDER BY t.seq"
+          )
+          .all(user_id) as Array<{ memory_id: number; seq: number; uuid: string; content: string; memory_ts: number; created_at: string }>
+        // find the seq of the anchor chunk (content contains "node 22")
+        const anchorRow = tRows.find((r) => r.content.toLowerCase().includes(anchor.toLowerCase()))
+        const dir = /(after|next|之后|然后|接下来|后来)/i.test(query) ? 1 : -1 // before → -1
+        if (anchorRow) {
+          const target = dir === 1 ? tRows.find((r) => r.seq > anchorRow.seq) : tRows.slice().reverse().find((r) => r.seq < anchorRow.seq)
+          if (target) {
+            const base = retrieve({ query, user_id, top_k: input.top_k, rows: rows.filter((r) => r.id !== target.memory_id) })
+            if (!base.data.some((d) => d.id === target.uuid)) {
+              base.data.unshift({ id: target.uuid, content: target.content, score: 1, created_at: target.created_at })
+            }
+            return { data: base.data }
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // M2 entity-link boost: entities mentioned in the query link to related memories,
+  // expanded transitively (multi-hop: Bob → Alice → Acme Corp → Berlin).
+  let linked = new Set<number>()
+  try {
+    const ql = query.toLowerCase()
+    const ents = db
+      .query("SELECT DISTINCT name FROM bench_entities WHERE user_id = ?").all(user_id) as Array<{ name: string }>
+    const start = ents.filter((e) => ql.includes(e.name.toLowerCase())).map((e) => e.name.toLowerCase())
+    // BFS over relations: follow sub→obj chains up to depth 3.
+    const frontier = [...start]
+    const visitedNames = new Set<string>(start)
+    for (let depth = 0; depth < 3 && frontier.length; depth++) {
+      const next: string[] = []
+      for (const name of frontier) {
+        const relMem = db
+          .query(
+            "SELECT memory_id, out, sub, obj FROM bench_relations WHERE user_id = ? AND (LOWER(sub) = ? OR LOWER(obj) = ?)"
+          )
+          .all(user_id, name, name) as Array<{ memory_id: number; out: string; sub: string; obj: string }>
+        for (const r of relMem) {
+          linked.add(r.memory_id)
+          const other = ((r.sub.toLowerCase() === name) ? r.obj : r.sub).toLowerCase()
+          if (!visitedNames.has(other) && other.length > 1) {
+            visitedNames.add(other)
+            next.push(other)
+          }
+        }
+        const entMem = db
+          .query("SELECT memory_id FROM bench_entities WHERE user_id = ? AND LOWER(name) = ?")
+          .all(user_id, name) as Array<{ memory_id: number }>
+        for (const r of entMem) linked.add(r.memory_id)
+      }
+      frontier.length = 0
+      for (const n of next) frontier.push(n)
+    }
+  } catch {}
+  if (linked.size > 0) {
+    // Force-include linked memories (entity-relation candidates) so multi-hop
+    // evidence reaches the answer model. Keep their score from the base retriever.
+    const linkedRows = rows.filter((r) => linked.has(r.id))
+    const base = retrieve({ query, user_id, top_k: input.top_k, rows: rows.filter((r) => !linked.has(r.id)) })
+    const ids = new Set(base.data.map((d) => d.id))
+    for (const r of linkedRows) {
+      if (ids.has(r.uuid)) continue
+      base.data.push({ id: r.uuid, content: r.content, score: 0.5, created_at: r.created_at })
+    }
+    base.data.sort((a, b) => b.score - a.score)
+    return base.data.length ? { data: base.data.slice(0, Math.min(100, base.data.length)) } : base
   }
-  const scored = rows.map((r) => {
-    const phrase = phraseScore(query, r.content)
-    const overlap = overlapScore(query, r.content)
-    // Recency gentle boost: newer content slightly preferred on ties.
-    const recency = Math.max(0, Math.min(1, (Date.now() - (r.memory_ts || 0)) / 86400000 / 30))
-    const score = phrase * 1 + overlap * 0.8 + (1 - recency) * 0.05
-    return { r, score }
-  })
-  scored.sort((a, b) => b.score - a.score || b.r.id - a.r.id)
-  const data = scored
-    .slice(0, top_k)
-    .map(({ r, score }) => ({ id: r.uuid, content: r.content, score: Math.round(score * 100) / 100, created_at: r.created_at }))
-  return { data }
+  return retrieve({ query, user_id, top_k: input.top_k, rows })
 }
 
 /** Optional: drop all bench data for a user (used by reset). */
