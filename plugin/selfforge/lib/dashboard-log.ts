@@ -126,7 +126,13 @@ function readPersistedLogs(): CallRecord[] {
   } catch { return [] }
 }
 
-/** Get call stats: counters, recent, per-day breakdown. */
+/** Business data types shown in the dashboard (memory/skill/rule/goal/…), excluding tool & dashboard chrome. */
+const BUSINESS_TYPES = new Set([
+  "memory", "skill", "rule", "goal", "checkpoint", "evolution", "repair",
+  "pattern", "workspace", "transfer", "team", "daily", "session",
+])
+
+/** Get call stats: counters, recent, per-day breakdown. Only business data types. */
 export function getCallStats(): {
   counters: Record<string, number>
   recent: CallRecord[]
@@ -141,9 +147,10 @@ export function getCallStats(): {
   let recent: CallRecord[] = recentBuf.slice(-50).reverse()
   try {
     const all = readPersistedLogs()
-    recent = all.slice(-50).reverse()
+    const biz = all.filter((r) => BUSINESS_TYPES.has(r.type))
+    recent = biz.slice(-50).reverse()
     const byDay: Record<string, Record<string, number>> = {}
-    for (const r of all) {
+    for (const r of biz) {
       const day = (r.ts || "").slice(0, 10)
       if (!day) continue
       if (!byDay[day]) byDay[day] = {}
@@ -152,13 +159,16 @@ export function getCallStats(): {
     // Rebuild counters from the whole persisted history too, so the dashboard's
     // 数据调用统计 reflects reality across restarts instead of just this process.
     const rebuilt: Record<string, number> = {}
-    for (const r of all) rebuilt[r.type] = (rebuilt[r.type] || 0) + 1
+    for (const r of biz) rebuilt[r.type] = (rebuilt[r.type] || 0) + 1
     return { counters: rebuilt, recent, byDay, totalCalls: all.length }
   } catch {}
+  // Filter out non-business keys even in the in-memory fallback.
+  const filteredCounters: Record<string, number> = {}
+  for (const [k, v] of Object.entries(counters)) if (BUSINESS_TYPES.has(k)) filteredCounters[k] = v
   return {
-    counters,
-    recent,
-    byDay,
+    counters: filteredCounters,
+    recent: recent.filter((r) => BUSINESS_TYPES.has(r.type)),
+    byDay: {},
     totalCalls: callCounter,
   }
 }
