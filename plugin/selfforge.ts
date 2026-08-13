@@ -7,9 +7,9 @@ import {
   liveMemoryInjection,
 } from "./selfforge/lib/memory"
 import { syncSkillsToDisk, recordSkillUse } from "./selfforge/lib/skills"
-import { goalAdvisory, maintainCheckpoints } from "./selfforge/lib/goals"
+import { goalAdvisory, maintainCheckpoints, goalStatus, goalProgress, goalComplete } from "./selfforge/lib/goals"
 import { evolutionAdvisory } from "./selfforge/lib/evolution"
-import { redact, truncate, spawnReview, spawnReviewSdk, getSession, sessionSet, bufferPush, isTrivial } from "./selfforge/lib/review"
+import { redact, truncate, spawnReview, spawnReviewSdk, spawnGoalReviewSdk, getSession, sessionSet, bufferPush, isTrivial } from "./selfforge/lib/review"
 import { memoryTools } from "./selfforge/lib/tools/memory"
 import { userTools } from "./selfforge/lib/tools/user"
 import { skillTools } from "./selfforge/lib/tools/skills"
@@ -96,6 +96,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
   let lastMaintenance = 0
   let lastVacuum = 0
   let reviewInProgress = false
+let lastGoalReviewAt = 0
 
   const REVIEW_HEADING = "# Autolearn Review"
 
@@ -155,6 +156,66 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
     setTimeout(() => {
       reviewInProgress = false
     }, 10000)
+  }
+
+  let goalReviewInProgress = false
+  const goalReviewCooldownMs = () => Number(getConfig("goal_review_cooldown_ms", "900000")) // 15 min
+
+  /** Parse the goal-reviewer sub-session reply and apply ADVANCE/COMPLETE. */
+  function applyGoalReviewResult(text: string) {
+    const lines = String(text || "").split(/\r?\n/)
+    let advanced = 0
+    let completed = 0
+    for (const line of lines) {
+      const t = line.trim()
+      const adv = t.match(/^ADVANCE\s+(\d+)\s+(CP[\d.]+)\s+(.*)$/i)
+      if (adv) {
+        try {
+          const r = goalProgress(Number(adv[1]), adv[3].trim())
+          if (r && !(r as any).error) advanced++
+        } catch {}
+        continue
+      }
+      const done = t.match(/^COMPLETE\s+(\d+)/i)
+      if (done) {
+        try {
+          goalComplete(Number(done[1]))
+          completed++
+        } catch {}
+        continue
+      }
+    }
+    logObs("goal_review_applied", { advanced, completed, raw: lines.length }, projectName())
+  }
+
+  function maybeSpawnGoalReview(sessionId: string, buf: Array<{ role: string; content: string }>) {
+    if (goalReviewInProgress) return
+    if (Date.now() - (lastGoalReviewAt || 0) < goalReviewCooldownMs()) return
+    const goals = goalStatus()
+    const active = goals.filter((g) => g.status === "active")
+    if (active.length === 0) return
+    goalReviewInProgress = true
+    lastGoalReviewAt = Date.now()
+    const result = spawnGoalReviewSdk(
+      client,
+      active.map((g) => ({
+        id: g.id,
+        goal: g.goal,
+        iteration: g.iteration,
+        max_iterations: g.max_iterations,
+        cps: g.checkpoints.map((c) => ({ cp: c.cp, status: c.status })),
+      })),
+      buf,
+      (sid) => reviewSessionIDs.add(sid)
+    )
+    void result.then((r) => {
+      if (r.spawned) {
+        logObs("goal_review_spawned", { session: r.session, goals: active.length }, projectName())
+      } else {
+        logObs("goal_review_failed", { error: r.error }, projectName())
+      }
+      goalReviewInProgress = false
+    })
   }
 
   const hooks = {
@@ -278,6 +339,7 @@ export const Selfforge: Plugin = async ({ client, directory, worktree }) => {
               if (buf.length > 2) {
                 lastIdleReview = nowMs
                 maybeSpawnReview(sid, "idle")
+                maybeSpawnGoalReview(sid, buf)
               }
             }
             // Feature 1: auto-distill — if the session has buffered messages but

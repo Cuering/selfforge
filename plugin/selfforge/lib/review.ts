@@ -140,6 +140,40 @@ export async function spawnReviewSdk(
   }
 }
 
+/**
+ * Spawn a goal-progress review inside the running opencode server (no external
+ * CLI). Uses the "goal-reviewer" agent. `onSession` marks it so its own messages
+ * do not re-trigger review.
+ */
+export async function spawnGoalReviewSdk(
+  client: any,
+  goals: Array<{ id: number; goal: string; iteration: number; max_iterations: number; cps: Array<{ cp: string; status: string }> }>,
+  recentMessages: Array<{ role: string; content: string }>,
+  onSession?: (sessionId: string) => void
+): Promise<{ spawned: boolean; session?: string; error?: string }> {
+  try {
+    if (!client?.session?.create || !client?.session?.promptAsync) {
+      throw new Error("SDK session API unavailable")
+    }
+    const prompt = formatGoalReview(goals, recentMessages)
+    const session = await client.session.create({ body: { title: "goal-progress review" } })
+    const sid: string | undefined =
+      session?.id ?? session?.data?.id ?? (session && typeof session === "object" ? (session as any).result?.id : undefined)
+    if (!sid) throw new Error(`no session id returned (${JSON.stringify(session).slice(0, 200)})`)
+    if (onSession) onSession(sid)
+    await client.session.promptAsync({
+      path: { id: sid },
+      body: {
+        agent: "goal-reviewer",
+        parts: [{ type: "text", text: prompt }],
+      },
+    })
+    return { spawned: true, session: sid }
+  } catch (err) {
+    return { spawned: false, error: (err as Error).message }
+  }
+}
+
 export type Session = {
   id: string
   project: string | null
@@ -149,6 +183,40 @@ export type Session = {
   buffer: string
   created_at: string
   updated_at: string
+}
+
+/**
+ * Build a prompt for the goal-progress reviewer sub-session.
+ *
+ * The sub-session (agent "goal-reviewer", hidden) reads the recent conversation
+ * plus the active goals + their checkpoint states, and returns one action line
+ * per goal:  NONE | ADVANCE <goalId> <cp> <note> | COMPLETE <goalId>
+ * The plugin then applies those via goal_progress / goal_complete.
+ */
+export function formatGoalReview(
+  goals: Array<{ id: number; goal: string; iteration: number; max_iterations: number; cps: Array<{ cp: string; status: string }> }>,
+  recentMessages: Array<{ role: string; content: string }>
+): string {
+  const goalLines = goals.map((g) => {
+    const done = g.cps.filter((c) => c.status === "done").map((c) => c.cp).join(",") || "none"
+    const pending = g.cps.filter((c) => c.status === "pending").map((c) => c.cp).join(",") || "none"
+    return `- goal ${g.id}: "${g.goal.slice(0, 120)}" (iter ${g.iteration}/${g.max_iterations})\n    done: ${done}  pending: ${pending}`
+  }).join("\n")
+  const conv = recentMessages.slice(-40).map((m) => `${m.role}: ${m.content.slice(0, 500)}`).join("\n---\n")
+  return `You are a goal-progress reviewer. Given recent conversation and the active goals, decide whether progress was made and which checkpoint the user's work maps to.
+
+Active goals:
+${goalLines}
+
+Recent conversation:
+${conv}
+
+Respond with EXACTLY ONE LINE PER GOAL, choosing from:
+- NONE <goalId>                      (no progress this turn)
+- ADVANCE <goalId> <CP> <note>        (advance the given checkpoint to done; note = short summary, no spaces)
+- COMPLETE <goalId>                   (all checkpoints effectively done / acceptance met)
+
+Only ADVANCE the next logical pending CP when the conversation clearly demonstrates that stage is finished. Do not invent progress. If uncertain, use NONE.`
 }
 
 export function getSession(id: string): Session {
