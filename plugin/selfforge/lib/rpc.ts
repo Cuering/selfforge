@@ -20,7 +20,7 @@ import { runRepair, recordSignal } from "./repair"
 // getSession, sessionSearch removed
 import { DASHBOARD_HTML } from "./dashboard-html"
 import { dashLog, dashLogList, dashLogClear, dashLogCount, recordCall, getCallStats, resetCallStats } from "./dashboard-log"
-import { benchAdd, benchSearch } from "./bench"
+import { benchAdd, benchSearch, benchClear } from "./bench"
 /**
  * Phase 3 — local JSON-RPC endpoint (HTTP/1.1, zero dependencies).
  *
@@ -185,6 +185,14 @@ async function handle(method: string, params: any): Promise<any> {
     case "checkpoints.maintain": {
       return maintainCheckpoints()
     }
+    case "bench.add":
+    case "add":
+      return benchAdd(params)
+    case "bench.search":
+    case "search":
+      return benchSearch(params)
+    case "bench.clear":
+      return benchClear(String(params?.user_id ?? ""))
     case "diagnostics.list":
       return { entries: dashLogList(Number(params?.limit ?? 50)), ...dashLogCount() }
     case "diagnostics.clear":
