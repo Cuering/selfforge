@@ -90,12 +90,23 @@ The install script auto-detects the environment:
 
 ### Web dashboard
 
-`selfforge serve` (or the plugin's auto-started daemon) binds http://127.0.0.1:9210/:
+`selfforge serve` (or the plugin's auto-started daemon) prefers http://127.0.0.1:9210/. If the preferred port is taken by another process, `serve()` auto-migrates up to +64 ports via `tryListen`, so the daemon stays reachable even when e.g. Tencent QQ squats 9210. The plugin's `/selfforge`, `selfforge_dashboard`, and the browser popup all follow the actual port.
 
 - `GET /` — single-page bilingual dashboard
 - `GET /api/*` — JSON endpoints (`/api/dashboard`, `/api/memories`, `/api/skills`, `/api/goals`, `/api/rules`, `/api/checkpoints`, `/api/workspaces`, `/api/errors`, `/api/stats`)
+- `GET /api/ping` — liveness probe returning `{pong, pid, port}`; this is the reliable way to detect a real selfforge daemon (a foreign service answering 200 on 9210 does **not** match)
 - `POST /` — the JSON-RPC surface
 - Header buttons: language toggle (EN/中文), theme, refresh, hot-restart daemon
+
+### Port stability & Windows watchdog
+
+On Windows the dashboard port can be stolen by unrelated apps (e.g. Tencent QQ takes `127.0.0.1:9210`). When that happens the daemon drifts to a higher port and the in-page Restart button becomes unreachable. For a stable, self-healing setup independent of the desktop app / plugin / browser:
+
+- Ship the watchdog scripts from `scripts/watchdog/` (install to the Windows Startup folder or a scheduled task):
+  - `selfforge-watchdog.cmd` — loop launcher (every 30s, mutex-guarded)
+  - `selfforge-watchdog-once.ps1` — single check: probes `/api/ping` on 9220..9230 (preferred, QQ-free) then 9211..9215; spawns the daemon with `SELFFORGE_PORT=9220` when nothing answers; keeps only the lowest-port survivor and kills duplicate daemons; writes the live port to `~/.evolve/watchdog-port.txt` and opens the browser when the port first changes
+- Use a fixed non-conflicting preferred port (e.g. 9220 via `SELFFORGE_PORT`) so the address does not drift on every boot.
+- Never stop unrelated services (QQ) to free the port — selfforge migrates around them.
 
 ### Standalone CLI (no OpenCode needed)
 
@@ -141,6 +152,11 @@ curl -s -X POST localhost:9210/search -H 'content-type: application/json' \
 ```
 
 ## Version history
+
+### v1.9.4 (2026-08-13) Port stability watchdog
+
+- **Watchdog scripts** (`scripts/watchdog/`) — 30s loop that probes `/api/ping`, respawns a dead daemon with `SELFFORGE_PORT=9220` (migrates past port squatters like Tencent QQ), dedupes multiple daemons, records the live port, and opens the browser on first port change.
+- **`/api/ping`** documented as the authoritative liveness probe (`{pong, pid, port}`) — HTTP 200 from a foreign service is not selfforge.
 
 ### v1.9.3 (2026-08-13) Agent Memory benchmark + rule scoring + i18n
 

@@ -89,12 +89,23 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 ### Web面板
 
-`selfforge serve`（或插件自动启动的daemon）绑定http://127.0.0.1:9210/：
+`selfforge serve`（或插件自动启动的daemon）首选绑定http://127.0.0.1:9210/。若首选端口被其他进程占用，`serve()`通过`tryListen`自动迁移（最多+64端口），因此即使腾讯QQ抢占9210，daemon仍然可达。插件的`/selfforge`、`selfforge_dashboard`和浏览器弹窗都会跟随实际端口。
 
 - `GET /` —— 单页中英双语面板
 - `GET /api/*` —— JSON端点（`/api/dashboard`、`/api/memories`、`/api/skills`、`/api/goals`、`/api/rules`、`/api/checkpoints`、`/api/workspaces`、`/api/errors`、`/api/stats`）
+- `GET /api/ping` —— 存活探针，返回`{pong,pid,port}`；这是判断是否真正selfforge daemon的可靠方式（外部服务在9210返回200**不**算数）
 - `POST /` —— JSON-RPC接口
 - 顶栏按钮：语言切换（EN/中文）、主题、刷新、热重启daemon
+
+### 端口稳定性与Windows看护
+
+在Windows上，面板端口可能被无关应用抢占（例如腾讯QQ占用`127.0.0.1:9210`）。此时daemon会漂移到更高端口，页内「重启」按钮也随之不可达。若要稳定、自愈且不依赖桌面版/插件/浏览器的方案：
+
+- 使用`scripts/watchdog/`下的看护脚本（放入Windows启动文件夹或计划任务）：
+  - `selfforge-watchdog.cmd` —— 循环启动器（每30秒，互斥锁防重入）
+  - `selfforge-watchdog-once.ps1` —— 单次检查：探9220..9230（首选，QQ不占）再探9211..9215的`/api/ping`；无存活时以`SELFFORGE_PORT=9220`拉起daemon；多个daemon时只保留最低端口并清理重复；把存活端口写入`~/.evolve/watchdog-port.txt`，端口首次变化时打开浏览器
+- 用固定的非冲突首选端口（如通过`SELFFORGE_PORT=9220`），避免每次开机地址漂移。
+- 不要为腾端口去停无关服务（QQ）——selfforge会绕开它们自动迁移。
 
 ### 独立CLI（无需OpenCode）
 
@@ -140,6 +151,11 @@ curl -s -X POST localhost:9210/search -H 'content-type: application/json' \
 ```
 
 ## 版本更新
+
+### v1.9.4（2026-08-13）端口稳定性看护
+
+- **看护脚本**（`scripts/watchdog/`）——30秒循环探测`/api/ping`，daemon死亡时以`SELFFORGE_PORT=9220`自动拉起（绕过QQ等端口抢占者），去重多个daemon，记录存活端口，端口首次变化时自动打开浏览器。
+- **`/api/ping`**文档化为权威存活探针（`{pong,pid,port}`）——外部服务在9210返回200不算selfforge。
 
 ### v1.9.3（2026-08-13）Agent Memory评测 + 规则评分 + 国际化
 
