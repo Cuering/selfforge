@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { goalStart, goalStatus, goalCheckpoint, goalComplete, goalStop } from "../goals"
+import { goalStart, goalStatus, goalCheckpoint, goalComplete, goalStop, goalProgress } from "../goals"
 import { logObs } from "../db"
 
 export const goalTools = {
@@ -55,6 +55,19 @@ export const goalTools = {
     args: { goalId: tool.schema.number() },
     async execute(args) {
       return { output: JSON.stringify(goalComplete(args.goalId)) }
+    },
+  }),
+
+  goal_progress: tool({
+    description:
+      "Advance the next pending checkpoint of an active goal to done, recording a note. Use after meaningful progress on a goal this turn — it keeps the advisory's CP progress accurate.",
+    args: {
+      goalId: tool.schema.number(),
+      notes: tool.schema.string().optional().describe("What was completed"),
+    },
+    async execute(args) {
+      const res = goalProgress(args.goalId, args.notes)
+      return { output: JSON.stringify(res, null, 2) }
     },
   }),
 

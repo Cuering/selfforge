@@ -12,7 +12,7 @@ import { dailySummaries } from "./summary"
 import { skillCreate, skillList, skillStatus, skillArchive, skillPatch, skillInfo, skillEnable, skillDisable, skillUninstall, skillInstallFromDir, adoptOpencodeSkills, skillFeedback } from "./skills"
 import { curatorRun } from "./review"
 import { workspaceList, mergeDuplicateWorkspaces } from "./workspace"
-import { goalStatus, goalStart, maintainCheckpoints } from "./goals"
+import { goalStatus, goalStart, maintainCheckpoints, goalProgress } from "./goals"
 import { ruleObserve, ruleStatus, ruleFeedback, autoEscalateRules } from "./rules"
 import { evolutionPropose, evolutionList } from "./evolution"
 import { patternCandidates, recordPattern } from "./patterns"
@@ -289,6 +289,9 @@ async function handle(method: string, params: any): Promise<any> {
       }))
     case "goals.list":
       return goalStatus().map((g) => ({ id: g.uuid, goal: g.goal, status: g.status }))
+    case "goals.progress":
+      if (!params?.goalId) throw new Error("params.goalId required")
+      return goalProgress(Number(params.goalId), params.notes ? String(params.notes) : undefined)
     case "snapshot.export": {
       const snap = exportSnapshot()
       return snap

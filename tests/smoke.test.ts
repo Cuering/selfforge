@@ -160,13 +160,15 @@ test("maintainCheckpoints prunes done + orphaned checkpoints, keeps actionable p
   g.goalComplete(done.id) // clears all of done's CPs
 
   const res = g.maintainCheckpoints()
-  // Done CPs are auto-cleared on mark; maintainCheckpoints handles orphaned/leftover
+  // Active goals keep checkpoints (done + pending) for accurate progress;
+  // completed goals' checkpoints are cleared by maintain / goalComplete.
   expect(res.removed).toBeGreaterThanOrEqual(0)
 
   const activeCps = g.goalCheckpoints(active.id)
-  // done CPs should be gone; pending CP1 must survive
+  // pending CP1 must survive
   expect(activeCps.find((c) => c.cp === "CP1" && c.deleted === 0)).toBeTruthy()
-  expect(activeCps.filter((c) => c.deleted === 0 && c.status === "done").length).toBe(0)
+  // done CPs are kept on active goals (progress tracking)
+  expect(activeCps.filter((c) => c.deleted === 0 && c.status === "done").length).toBeGreaterThanOrEqual(1)
   // completed goal's checkpoints are all gone
   const goneCps = g.goalCheckpoints(done.id)
   expect(goneCps.filter((c) => c.deleted === 0).length).toBe(0)
@@ -175,10 +177,12 @@ test("maintainCheckpoints prunes done + orphaned checkpoints, keeps actionable p
 test("rule observe -> escalate dryRun", async () => {
   const rl = (await import("../plugin/selfforge/lib/rules")) as typeof import("../plugin/selfforge/lib/rules")
   const observed = rl.ruleObserve({ rule: "always use spaces not tabs", domain: "code-style" })
-  expect(observed.recommendation).toBe("write-project")
+  // base score 3, count 1 → score ~4.4 ≥ 4 → escalate-global
+  expect(observed.recommendation).toBe("escalate-global")
   rl.ruleObserve({ rule: "always use spaces not tabs", domain: "code-style" })
   const status = rl.ruleStatus()
   expect(status.find((r) => r.rule.includes("spaces"))?.total_count).toBe(2)
+  expect(status.find((r) => r.rule.includes("spaces"))?.score).toBeGreaterThanOrEqual(4)
   const esc = rl.escalate({ dryRun: true })
   expect(esc.results.length).toBeGreaterThan(0)
 })

@@ -131,13 +131,28 @@ export function goalCheckpoint(opts: { goalId: number; cp: string; status?: stri
       opts.goalId
     )
   }
-  // Terminal checkpoint states (done/skipped/failed) are auto-cleared — they represent
-  // completed CPs that no longer need to clutter the dashboard.
-  if (status === "done" || status === "skipped" || status === "failed") {
-    const cp = db.query("SELECT id FROM checkpoints WHERE goal_id = ? AND cp = ? ORDER BY id DESC LIMIT 1").get(opts.goalId, opts.cp) as { id: number } | undefined
-    if (cp) db.query("UPDATE checkpoints SET deleted = 1 WHERE id = ?").run(cp.id)
-  }
+  // Keep the checkpoint row (status = done/skipped/failed) so done/total progress
+  // stays accurate; goalComplete() clears all CPs when the goal finishes.
   return goalCheckpoints(opts.goalId)
+}
+
+/**
+ * Auto-advance the FIRST pending checkpoint of each active goal whose likely
+ * next stage can be inferred. Deterministic: for goals whose first pending CP is
+ * the immediate next in CP_ORDER after a completed one, we consider the current
+ * stage "in progress" and promote the earliest pending -> done ONLY if marked.
+ * This is intentionally conservative: we never fabricate progress. It just
+ * offers a one-step help: when goal_status shows a goal with zero done but the
+ * user has demonstrably worked on it, callers may use goal_progress.
+ */
+export function goalProgress(goalId: number, notes?: string) {
+  const g = getGoal(goalId)
+  if (!g || g.status !== "active") return { error: "goal not active" }
+  const cps = goalCheckpoints(goalId)
+  const pending = cps.find((c) => c.status === "pending")
+  if (!pending) return { done: true, goalId }
+  const res = goalCheckpoint({ goalId, cp: pending.cp, status: "done", notes: notes ?? "auto-advanced" })
+  return { advanced: pending.cp, remaining: res.filter((c) => c.status === "pending").length }
 }
 
 export function goalCheckpoints(goalId: number): Checkpoint[] {
@@ -241,27 +256,18 @@ export function goalAdvisory(): string | null {
 export function maintainCheckpoints(): { removed: number; remaining_active: number; remaining_pending: number } {
   const db = getDb()
 
-  // 1. Completed checkpoints: remove (goal progress is captured in status already).
-  const done = db
-    .query("UPDATE checkpoints SET deleted = 1 WHERE deleted = 0 AND status = 'done'")
-    .run()
-
-  // 2. Checkpoints belonging to goals that are no longer active (or were deleted).
+  // 1. Checkpoints belonging to goals that are no longer active (or were deleted)
+  //    are no longer actionable — soft-delete them.
+  //    NOTE: active goals' checkpoints are KEPT, including done ones, so that
+  //    progress counts (done/total) stay accurate for goalAdvisory. Completed
+  //    checkpoints of an ACTIVE goal remain administrable via goalComplete().
   const orphaned = db
     .query(
       "UPDATE checkpoints SET deleted = 1 WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE deleted = 1 OR status != 'active')"
     )
     .run()
 
-  // 3. Active goals that have already reached their max iterations: their
-  //    remaining pending checkpoints are not actionable either.
-  const exhausted = db
-    .query(
-      "UPDATE checkpoints SET deleted = 1 WHERE deleted = 0 AND goal_id IN (SELECT id FROM goals WHERE status = 'active' AND iteration >= max_iterations)"
-    )
-    .run()
-
-  const removed = Number(done.changes) + Number(orphaned.changes) + Number(exhausted.changes)
+  const removed = Number(orphaned.changes)
   const remaining_active = (
     db
       .query(
@@ -270,7 +276,11 @@ export function maintainCheckpoints(): { removed: number; remaining_active: numb
       .get() as { n: number }
   ).n
   const remaining_pending = (
-    db.query("SELECT COUNT(*) AS n FROM checkpoints WHERE deleted = 0 AND status = 'pending'").get() as { n: number }
+    db
+      .query(
+        "SELECT COUNT(*) AS n FROM checkpoints c JOIN goals g ON g.id = c.goal_id WHERE c.deleted = 0 AND c.status = 'pending' AND g.status = 'active'"
+      )
+      .get() as { n: number }
   ).n
   return { removed, remaining_active, remaining_pending }
 }
