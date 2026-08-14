@@ -215,7 +215,3 @@ curl -s -X POST localhost:9210/search -H 'content-type: application/json' \
 ### v1.0.0 (2026-08-07) Initial release
 
 - Unified self-evolution engine, single SQLite store, one-command install.
-
-## License
-
-MIT
