@@ -214,7 +214,3 @@ curl -s -X POST localhost:9210/search -H 'content-type: application/json' \
 ### v1.0.0（2026-08-07）初始版本
 
 - 统一自进化引擎，单一SQLite存储，一键安装。
-
-## License
-
-MIT
